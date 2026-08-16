@@ -10,3 +10,6 @@ services:
     network_mode: host
     volumes:
       - ./configs:/data
+      # Certificates for DoT and the SNI-based DoH/API endpoints. Read-only so
+      # the host letsencrypt process keeps owning and renewing them.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
