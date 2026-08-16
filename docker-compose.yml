@@ -9,4 +9,4 @@ services:
     # allowlist-based split routing.
     network_mode: host
     volumes:
-      - ./data:/data
+      - ./configs:/data

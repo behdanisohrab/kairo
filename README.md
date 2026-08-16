@@ -39,16 +39,18 @@ other domain resolves normally and never touches the VPS.
 mkdir -p configs
 docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest --generate config /configs
 # edit configs/config.json: host, vps_ip, api_key, tls paths
-cp -r configs data
 docker compose up -d
 ```
 
 Images are published to the GitHub Container Registry on every release
 (`ghcr.io/behdanisohrab/kairo:latest` and the tagged version).
 
-The `--generate` flag writes a complete starting config and the policy files;
-the same flag works with the bare binary via `kairo --generate config <dir>`.
-A step by step walkthrough lives in [docs/setup.md](docs/setup.md).
+The `--generate` flag writes a complete starting config and the policy files
+into `configs/`. The compose file mounts that same `./configs` directory at
+`/data` in the container, where the image expects `config.json` to live, so no
+copying is needed. The bare binary uses the flag the same way via
+`kairo --generate config <dir>`. A step by step walkthrough lives in
+[docs/setup.md](docs/setup.md).
 
 The compose file uses host networking so the listeners see the real client IPs,
 which the allowlist depends on, and so they can bind the privileged ports.

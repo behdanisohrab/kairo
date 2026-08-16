@@ -28,7 +28,7 @@ In Docker, the same command produces the files on a mounted volume:
 
 ```bash
 mkdir -p configs
-docker run --rm -it -v "$PWD/configs:/configs" kairo --generate config /configs
+docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest --generate config /configs
 ```
 
 The generator prints a summary and the paths it wrote. It only creates files;
@@ -63,11 +63,15 @@ cd /opt/kairo
 kairo -config config.json
 ```
 
-In Docker, the compose file handles the build and the volume mount:
+In Docker, the compose file pulls the image and mounts the configs directory:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+The compose file mounts `./configs` at `/data` inside the container, which is
+exactly where the image looks for `config.json`. The generated files need no
+copying or moving.
 
 The compose file uses host networking on purpose. The DNS servers and the SNI
 router must see the real client IPs for the allowlist to work, and they must be
