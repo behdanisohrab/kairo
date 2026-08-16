@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	"fmt"
@@ -52,8 +53,25 @@ func StartSNI(s *State, handler http.Handler) {
 func (s *State) handleConn(clientConn net.Conn, handler http.Handler, tlsConfig *tls.Config) {
 	defer clientConn.Close()
 
+	// Everything is read through a bufio.Reader so a PROXY protocol header can
+	// be consumed without losing any ClientHello bytes that nginx may already
+	// have flushed into the buffer.
+	reader := bufio.NewReader(clientConn)
+
+	peerIP := remoteIPAddr(clientConn.RemoteAddr())
+	if cfg.ProxyProtocol && peerIP != nil && peerIP.IsLoopback() {
+		src, err := readProxyHeader(reader)
+		if err != nil {
+			log.Printf("proxy protocol from %s: %v", peerIP, err)
+			return
+		}
+		if src != nil {
+			peerIP = src
+		}
+	}
+
 	_ = clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	hello, peeked, err := peekClientHello(clientConn)
+	hello, peeked, err := peekClientHello(reader)
 	if err != nil {
 		return
 	}
@@ -69,9 +87,9 @@ func (s *State) handleConn(clientConn net.Conn, handler http.Handler, tlsConfig 
 	// serve DoH and the API.
 	if cfg.Host != "" && sni == cfg.Host {
 		if tlsConfig != nil {
-			s.serveTLS(clientConn, peeked, handler, tlsConfig)
+			s.serveTLS(clientConn, reader, peeked, handler, tlsConfig)
 		} else if cfg.HostBackend != "" {
-			s.tunnel(clientConn, peeked, cfg.HostBackend)
+			s.tunnel(clientConn, reader, peeked, cfg.HostBackend)
 		} else {
 			log.Printf("no handler for host SNI %q", sni)
 		}
@@ -80,18 +98,55 @@ func (s *State) handleConn(clientConn net.Conn, handler http.Handler, tlsConfig 
 
 	// Everything else is a split-routed destination, and the allowlist gate
 	// applies again here. Trusting only the DNS answer would be naive.
-	peerIP := remoteIPAddr(clientConn.RemoteAddr())
 	if !s.isAllowedIP(peerIP) {
 		log.Printf("rejected %s: SNI %s not allowlisted", peerIP, sni)
 		return
 	}
 
-	s.tunnel(clientConn, peeked, net.JoinHostPort(sni, "443"))
+	s.tunnel(clientConn, reader, peeked, s.tunnelAddr(sni))
+}
+
+// readProxyHeader parses a PROXY protocol v1 header, if the connection starts
+// with one, and returns the source address it advertises. A nil source with no
+// error means the connection was not a PROXY connection at all.
+func readProxyHeader(r *bufio.Reader) (net.IP, error) {
+	head, err := r.Peek(6)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.HasPrefix(head, []byte("PROXY ")) {
+		return nil, nil
+	}
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read PROXY header: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 || fields[0] != "PROXY" {
+		return nil, fmt.Errorf("malformed PROXY header")
+	}
+	switch fields[1] {
+	case "UNKNOWN":
+		return nil, nil
+	case "TCP4", "TCP6":
+	default:
+		return nil, fmt.Errorf("unsupported PROXY protocol %q", fields[1])
+	}
+	if len(fields) != 6 {
+		return nil, fmt.Errorf("malformed PROXY header")
+	}
+	ip := net.ParseIP(fields[2])
+	if ip == nil {
+		return nil, fmt.Errorf("invalid source IP in PROXY header")
+	}
+	return ip, nil
 }
 
 // tunnel relays bytes to the backend, replaying the ClientHello bytes we
-// already swallowed so the destination still sees the full handshake.
-func (s *State) tunnel(clientConn net.Conn, peeked io.Reader, backendAddr string) {
+// already swallowed so the destination still sees the full handshake. src is
+// where the rest of the client's bytes come from; it may buffer more than
+// clientConn exposes, so the raw conn is never read directly.
+func (s *State) tunnel(clientConn net.Conn, src io.Reader, peeked io.Reader, backendAddr string) {
 	backend, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
 	if err != nil {
 		log.Printf("tunnel dial %s: %v", backendAddr, err)
@@ -113,7 +168,7 @@ func (s *State) tunnel(clientConn net.Conn, peeked io.Reader, backendAddr string
 		if peeked != nil {
 			_, _ = io.Copy(backend, peeked)
 		}
-		_, _ = io.Copy(backend, clientConn)
+		_, _ = io.Copy(backend, src)
 		if tc, ok := backend.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
 		}
@@ -123,10 +178,10 @@ func (s *State) tunnel(clientConn net.Conn, peeked io.Reader, backendAddr string
 
 // serveTLS wraps the already-peeked connection so the TLS layer reads the
 // ClientHello exactly once, then serves one HTTP session over it.
-func (s *State) serveTLS(clientConn net.Conn, peeked io.Reader, handler http.Handler, tlsConfig *tls.Config) {
+func (s *State) serveTLS(clientConn net.Conn, src io.Reader, peeked io.Reader, handler http.Handler, tlsConfig *tls.Config) {
 	wrap := &bufferedConn{
 		Conn: clientConn,
-		r:    io.MultiReader(peeked, clientConn),
+		r:    io.MultiReader(peeked, src),
 	}
 	tconn := tls.Server(wrap, tlsConfig)
 	if err := tconn.Handshake(); err != nil {

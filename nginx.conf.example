@@ -1,40 +1,68 @@
-# Reverse-proxy mode: when you prefer to terminate TLS with nginx/caddy, leave
-# tls.cert/tls.key empty in config.json, point "host_backend" at this server
-# (e.g. "127.0.0.1:8443"), and proxy DoH + the API to the plain HTTP backend
-# (config "http": "127.0.0.1:8080").
+# Reverse-proxy mode: when you prefer to terminate TLS with nginx, leave
+# tls.cert/tls.key empty in config.json and proxy DoH + the API to the plain
+# HTTP backend (config "http": "127.0.0.1:8080").
 #
-# The SNI router forwards https://dns.example.com traffic to this 8443 listener,
-# so DoH stays available at https://dns.example.com/dns-query.
+# The stream block below fronts :443. Known hostnames go to their own
+# backends; everything else (the restricted domains) is handed to Kairo's SNI
+# router with the PROXY protocol so the allowlist still sees the real client.
+# Kairo config for this: "listen.https": "127.0.0.1:8447", "proxy_protocol": true.
 
-server {
-    listen 8443 ssl http2;
-    server_name dns.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/dns.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/dns.example.com/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-
-    location /dns-query {
-        proxy_pass http://127.0.0.1:8080/dns-query;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+stream {
+    map $ssl_preread_server_name $backend {
+        dns.example.com           127.0.0.1:8443;  # nginx HTTP server below
+        # net.example.com         127.0.0.1:8444;  # any other services you run
+        default                   127.0.0.1:9443;  # unknown SNI -> Kairo tunnel
     }
 
-    location /api/ {
-        proxy_pass http://127.0.0.1:8080/api/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    server {
+        listen 443;
+        ssl_preread on;
+        proxy_pass $backend;
     }
 
-    location /healthz {
-        proxy_pass http://127.0.0.1:8080/healthz;
-        proxy_set_header Host $host;
+    # Receives the unknown-SNI connections from the :443 listener and relays
+    # them to Kairo with the original client address attached. Loopback only.
+    server {
+        listen 127.0.0.1:9443;
+        proxy_pass 127.0.0.1:8447;
+        proxy_protocol on;
     }
+}
 
-    location / {
-        proxy_pass http://127.0.0.1:8080/;
-        proxy_set_header Host $host;
+# nginx terminates TLS for Kairo's own hostname and proxies DoH + the API to
+# the loopback HTTP backend. X-Forwarded-For carries the real client IP, which
+# Kairo trusts because the peer is loopback.
+http {
+    server {
+        listen 8443 ssl http2;
+        server_name dns.example.com;
+
+        ssl_certificate     /etc/letsencrypt/live/dns.example.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/dns.example.com/privkey.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+
+        location /dns-query {
+            proxy_pass http://127.0.0.1:8080/dns-query;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/ {
+            proxy_pass http://127.0.0.1:8080/api/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /healthz {
+            proxy_pass http://127.0.0.1:8080/healthz;
+            proxy_set_header Host $host;
+        }
+
+        location / {
+            proxy_pass http://127.0.0.1:8080/;
+            proxy_set_header Host $host;
+        }
     }
 }

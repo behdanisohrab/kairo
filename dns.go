@@ -12,7 +12,8 @@ import (
 
 // processQuery is the whole point of this binary. Restricted domain plus an
 // allowlisted client: answer with our own IP and silence IPv6 so the traffic
-// is forced over the SNI router. Anything else goes upstream.
+// is forced over the SNI router. Everyone else gets the upstream answer, so an
+// unallowlisted client still resolves normally and simply is not routed.
 func (s *State) processQuery(req *dns.Msg, clientIP net.IP) *dns.Msg {
 	if req == nil || len(req.Question) == 0 {
 		m := new(dns.Msg)

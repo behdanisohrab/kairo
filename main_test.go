@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -146,6 +148,22 @@ func TestProcessQuerySplitRouting(t *testing.T) {
 		if len(resp.Answer) != 0 {
 			t.Fatalf("disallowed client must not receive a VPS IP answer, got %d answers", len(resp.Answer))
 		}
+		resp = s.processQuery(newQuery("google.com.", dns.TypeA), disallowed)
+		if resp.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("non-restricted query rcode = %v, want servfail (upstream unreachable)", resp.Rcode)
+		}
+	})
+
+	t.Run("loopback is always allowed", func(t *testing.T) {
+		cfg.Upstream = []string{"127.0.0.1:9"}
+		resp := s.processQuery(newQuery("youtube.com.", dns.TypeA), net.ParseIP("127.0.0.1"))
+		if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+			t.Fatalf("loopback query failed: rcode=%v answers=%d", resp.Rcode, len(resp.Answer))
+		}
+		a, ok := resp.Answer[0].(*dns.A)
+		if !ok || a.A.String() != cfg.VPSIP {
+			t.Fatalf("loopback answer = %v, want VPS IP", resp.Answer)
+		}
 	})
 
 	t.Run("allowlisted client gets normal answer for non-restricted domain", func(t *testing.T) {
@@ -267,5 +285,69 @@ func TestGenerateIPsMissingFileIsNoOp(t *testing.T) {
 	}
 	if added != 0 || failed != 0 {
 		t.Errorf("added = %d, failed = %d, want 0 0", added, failed)
+	}
+}
+
+func TestReadProxyHeader(t *testing.T) {
+	t.Run("plain TLS bytes are not a PROXY header", func(t *testing.T) {
+		r := bufio.NewReader(strings.NewReader("\x16\x03\x01...tls"))
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip != nil {
+			t.Errorf("ip = %v, want nil", ip)
+		}
+		// The bytes must still be readable after the no-op.
+		rest, _ := io.ReadAll(r)
+		if string(rest) != "\x16\x03\x01...tls" {
+			t.Errorf("rest = %q, want original bytes", rest)
+		}
+	})
+
+	t.Run("parses TCP4 header", func(t *testing.T) {
+		r := bufio.NewReader(strings.NewReader("PROXY TCP4 198.51.100.7 84.245.19.105 50210 443\r\nTLSBYTES"))
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip == nil || ip.String() != "198.51.100.7" {
+			t.Errorf("ip = %v, want 198.51.100.7", ip)
+		}
+		rest, _ := io.ReadAll(r)
+		if string(rest) != "TLSBYTES" {
+			t.Errorf("rest = %q, want TLSBYTES", rest)
+		}
+	})
+
+	t.Run("parses TCP6 header", func(t *testing.T) {
+		r := bufio.NewReader(strings.NewReader("PROXY TCP6 2001:db8::7 2001:db8::1 1234 443\r\n"))
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip == nil || ip.String() != "2001:db8::7" {
+			t.Errorf("ip = %v, want 2001:db8::7", ip)
+		}
+	})
+
+	t.Run("UNKNOWN form carries no address", func(t *testing.T) {
+		r := bufio.NewReader(strings.NewReader("PROXY UNKNOWN\r\n"))
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip != nil {
+			t.Errorf("ip = %v, want nil", ip)
+		}
+	})
+
+	for _, bad := range []string{"PROXY TCP4 nope 1.2.3.4 1 2\r\n", "PROXY TCP7 1.2.3.4 1.2.3.4 1 2\r\n", "PROXY TCP4 1.2.3.4 1.2.3.4 1\r\n"} {
+		t.Run("rejects garbage "+bad[:20], func(t *testing.T) {
+			r := bufio.NewReader(strings.NewReader(bad))
+			if _, err := readProxyHeader(r); err == nil {
+				t.Errorf("readProxyHeader(%q) should fail", bad)
+			}
+		})
 	}
 }

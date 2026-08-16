@@ -71,6 +71,14 @@ interface, meaning a local proxy. A header arriving from any other peer is
 ignored and the socket address is used instead. This prevents a remote client
 from impersonating an allowlisted address by sending a forged header.
 
+The SNI tunnel has the same problem in a different form. If a stream proxy
+sits in front of `:443` and forwards unknown SNIs straight to the destination,
+then a client that adds the VPS IP to its hosts file reaches the tunnel without
+ever touching the allowlist. The `proxy_protocol` setting closes that gap: the
+proxy sends the real client address in a PROXY protocol v1 header, and Kairo
+uses it for the tunnel gate. The header is trusted only from a loopback peer,
+so a remote client cannot forge it.
+
 ## Network exposure
 
 The service binds four listeners. The DNS and DoT listeners and the SNI router
@@ -81,10 +89,9 @@ key. In Docker, host networking means the container has the same exposure as the
 host, and the firewall rules on the host apply unchanged.
 
 The DNS server answers restricted domains with the VPS IP only for allowlisted
-clients. Other clients get forwarded answers, so an unlisted device on your
-network still resolves everything normally and its DNS queries are still served.
-This keeps the service usable for the whole network while limiting who is
-routed through the VPS.
+clients. Other clients get the normal upstream answer, so an unlisted device on
+your network still resolves everything correctly, it just is not routed through
+the VPS.
 
 ## Operational hardening checklist
 

@@ -26,6 +26,7 @@ func main() {
 	configPath := flag.String("config", "config.json", "path to configuration file")
 	genIPs := flag.Bool("gen-ips", false, "resolve the ip_source domains file into the allowlist and exit")
 	generate := flag.Bool("generate", false, "write default config files and exit, e.g. --generate config configs/")
+	migrate := flag.Bool("migrate", false, "add settings missing from an existing config and write it back, e.g. --migrate configs/config.json")
 	showVersion := flag.Bool("version", false, "print the Kairo version and exit")
 	flag.Parse()
 
@@ -36,6 +37,17 @@ func main() {
 
 	if *generate {
 		if err := generateConfigs(flag.Args()); err != nil {
+			log.Fatalf("kairo: %v", err)
+		}
+		return
+	}
+
+	if *migrate {
+		target := "config.json"
+		if len(flag.Args()) > 0 {
+			target = flag.Args()[0]
+		}
+		if err := migrateConfig(target); err != nil {
 			log.Fatalf("kairo: %v", err)
 		}
 		return

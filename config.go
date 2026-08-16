@@ -21,6 +21,12 @@ type Config struct {
 	DataDir     string       `json:"data_dir"`
 	TTL         uint32       `json:"ttl"` // TTL for the fake A records
 	Rate        RateConfig   `json:"rate"`
+
+	// ProxyProtocol makes the SNI router trust the client address in a PROXY
+	// protocol v1 header, but only from loopback peers (a local nginx). Use it
+	// when nginx fronts :443 and forwards unknown SNIs to us, otherwise the
+	// allowlist gate would see nginx's own address instead of the client's.
+	ProxyProtocol bool `json:"proxy_protocol"`
 }
 
 // IPSource feeds the allowlist generator: resolve these domains, allowlist the
@@ -80,7 +86,15 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(b, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := applyDefaultsAndValidate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
 
+// applyDefaultsAndValidate normalizes the user's values, fills any fallback
+// defaults, and checks that the config can actually run.
+func applyDefaultsAndValidate(cfg *Config) error {
 	cfg.Host = normalizeDomain(cfg.Host)
 	cfg.HostBackend = strings.TrimSpace(cfg.HostBackend)
 	cfg.VPSIP = strings.TrimSpace(cfg.VPSIP)
@@ -90,13 +104,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	if net.ParseIP(cfg.VPSIP) == nil {
-		return nil, fmt.Errorf("invalid vps_ip %q", cfg.VPSIP)
+		return fmt.Errorf("invalid vps_ip %q", cfg.VPSIP)
 	}
 	if len(cfg.Upstream) == 0 {
-		return nil, fmt.Errorf("upstream_dns must not be empty")
+		return fmt.Errorf("upstream_dns must not be empty")
 	}
 	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("api_key must not be empty")
+		return fmt.Errorf("api_key must not be empty")
 	}
 	if cfg.TTL == 0 {
 		cfg.TTL = 300
@@ -113,5 +127,5 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Rate.APIBurst <= 0 {
 		cfg.Rate.APIBurst = 40
 	}
-	return cfg, nil
+	return nil
 }

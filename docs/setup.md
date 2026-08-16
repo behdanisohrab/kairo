@@ -84,8 +84,10 @@ sign that the policy files loaded correctly.
 
 ## Allow your clients
 
-Only allowlisted clients are split-routed. Before a client sees any benefit,
-its public IP must be in the allowlist. Add it with the API:
+Only allowlisted clients are split-routed. A client that is not allowlisted
+still gets normal DNS answers, but restricted domains resolve to their real
+addresses instead of the VPS IP. Before a client sees any benefit, its public
+IP must be in the allowlist. Add it with the API:
 
 ```bash
 curl "https://dns.example.com/api/allow?key=<your-api-key>&ip=<client-public-ip>" -X POST

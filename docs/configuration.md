@@ -34,6 +34,7 @@ defines the network ports. The rate section controls throughput limits.
   },
   "data_dir": "data",
   "ttl": 300,
+  "proxy_protocol": false,
   "rate": {
     "dns": 200,
     "dns_burst": 400,
@@ -90,9 +91,29 @@ The `listen` section defines four addresses, each a host and port pair.
 | `listen.https` | `:443` | The SNI router carrying DoH, the API, and the tunnel. |
 | `listen.http` | `127.0.0.1:8080` | Loopback HTTP backend for reverse proxies. |
 
+The allowlist decides who is split-routed, not who may query. A restricted
+domain resolves to the VPS IP only for allowlisted clients; everyone else gets
+the normal upstream answer and simply is not routed. The same policy applies on
+plain DNS, DoT, and DoH.
+
 Binding `:53` and `:443` requires root or the relevant capabilities. In Docker
 this is handled by host networking; on a bare server you either run as root or
 grant the binary the `NET_BIND_SERVICE` capability.
+
+## Proxy protocol
+
+When nginx (or another stream proxy) fronts `:443` and forwards unknown SNIs to
+Kairo, the tunnel gate would see the proxy's address instead of the client's.
+Setting `proxy_protocol` to `true` makes the SNI router accept the client
+address from a PROXY protocol v1 header, but only when the direct peer is the
+loopback interface. This keeps the gate meaningful: without it, any client
+could add the VPS IP to its hosts file and reach the tunnel through nginx, and
+the allowlist would not see the real client.
+
+Point `listen.https` at a loopback-only port, enable `proxy_protocol`, and have
+nginx send the header with `proxy_protocol on;` for the destinations it hands
+to Kairo. Never enable this on a listener reachable by untrusted peers, since a
+remote client could forge the header.
 
 ## TLS
 
@@ -138,9 +159,27 @@ generator named by `ip_source.domains_file`.
 | Flag | Description |
 | --- | --- |
 | `-config path` | Path to the configuration file, default `config.json`. |
+| `-generate` | Write default config files and exit, e.g. `-generate config configs/`. |
+| `-migrate` | Add settings missing from an existing config and write it back, e.g. `-migrate configs/config.json`. |
 | `-gen-ips` | Resolve the IP source file into the allowlist and exit. |
 | `-version` | Print the version and exit. |
 
 The `-gen-ips` flag is useful in a cron job or during first setup. It performs a
 single generation pass and exits, which makes the result visible in the log and
 in `allowed.txt` without starting the full service.
+
+## Upgrades
+
+New releases occasionally add configuration options, like `proxy_protocol`.
+Kairo accepts a config that is missing them, filling in the defaults, but the
+file itself stays as you wrote it. Run `-migrate` after an upgrade to bring the
+file up to the current schema:
+
+```bash
+kairo -migrate configs/config.json
+docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest --migrate /configs/config.json
+```
+
+`-migrate` only adds what is missing, never overwrites a value you set, and
+keeps unknown keys. It prints the settings it added and is a no-op when the
+config is already up to date.

@@ -33,6 +33,10 @@ type State struct {
 
 	// resolver is used by the IP generator; replaceable in tests.
 	resolver func(domain string) []net.IP
+
+	// tunnelAddr picks where the SNI tunnel goes for a given destination name;
+	// replaceable in tests.
+	tunnelAddr func(domain string) string
 }
 
 func NewState(cfg *Config) (*State, error) {
@@ -59,6 +63,9 @@ func NewState(cfg *Config) (*State, error) {
 		domainsPath:  filepath.Join(dataDir, domainsFilename),
 		ipSourcePath: ipSource,
 		resolver:     defaultResolver,
+		tunnelAddr: func(domain string) string {
+			return net.JoinHostPort(domain, "443")
+		},
 	}
 
 	if err := s.load(); err != nil {

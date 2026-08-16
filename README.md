@@ -52,13 +52,23 @@ copying is needed. The bare binary uses the flag the same way via
 `kairo --generate config <dir>`. A step by step walkthrough lives in
 [docs/setup.md](docs/setup.md).
 
+When you upgrade to a newer image, run `--migrate` once against your config to
+add any settings the new version introduced:
+
+```bash
+docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest --migrate /configs/config.json
+```
+
+It only adds what is missing, never touches your values, and is a no-op when the
+config is already current.
+
 The compose file uses host networking so the listeners see the real client IPs,
 which the allowlist depends on, and so they can bind the privileged ports.
 
 ## Manual build
 
 ```bash
-go build -ldflags="-X main.version=0.1.0" -o kairo .
+go build -ldflags="-X main.version=0.2.0" -o kairo .
 ./kairo --generate config configs
 ./kairo -config configs/config.json
 ```
