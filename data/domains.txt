@@ -1,0 +1,5 @@
+# Restricted domains. Queries for these names are answered with the VPS IP and
+# the traffic is routed through the SNI proxy, but only for allowlisted clients.
+instagram.com
+tiktok.com
+x.com

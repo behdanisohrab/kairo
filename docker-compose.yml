@@ -1,0 +1,12 @@
+services:
+  kairo:
+    image: ghcr.io/behdanisohrab/kairo:latest
+    container_name: kairo
+    restart: unless-stopped
+    # Host networking is required: the SNI router and DNS servers must see the
+    # real client IPs (for the allowlist) and bind privileged ports (53/443)
+    # directly. Published ports would NAT the client IP away and break
+    # allowlist-based split routing.
+    network_mode: host
+    volumes:
+      - ./data:/data

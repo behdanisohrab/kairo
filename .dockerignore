@@ -1,0 +1,7 @@
+.git
+/kairo
+Dockerfile
+docker-compose.yml
+README.md
+LICENSE
+docs

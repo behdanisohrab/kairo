@@ -1,0 +1,146 @@
+# Kairo configuration
+
+Kairo reads a single JSON file on startup, selected with the `-config` flag.
+Every field has a default, so the file only needs to set the values that differ.
+This document explains each field, the file layout, and the command line flags.
+
+## The configuration file
+
+The file is split into logical sections. The identity section describes the
+public face of the service. The policy section names the upstream resolver and
+the files used for the allowlist and the restricted list. The listener section
+defines the network ports. The rate section controls throughput limits.
+
+```json
+{
+  "host": "dns.example.com",
+  "host_backend": "",
+  "vps_ip": "1.2.3.4",
+  "api_key": "REPLACE_WITH_A_STRONG_SECRET",
+  "upstream_dns": ["1.1.1.1:53", "8.8.8.8:53"],
+  "ip_source": {
+    "domains_file": "domain.txt",
+    "interval": 300
+  },
+  "listen": {
+    "dns": ":53",
+    "dot": ":853",
+    "https": ":443",
+    "http": "127.0.0.1:8080"
+  },
+  "tls": {
+    "cert": "/etc/letsencrypt/live/dns.example.com/fullchain.pem",
+    "key": "/etc/letsencrypt/live/dns.example.com/privkey.pem"
+  },
+  "data_dir": "data",
+  "ttl": 300,
+  "rate": {
+    "dns": 200,
+    "dns_burst": 400,
+    "api": 20,
+    "api_burst": 40
+  }
+}
+```
+
+## Identity
+
+The `host` value is the hostname at which clients reach the DoH endpoint and
+the management API. It must match the certificate presented by the server and
+it is matched against the SNI of every TLS connection. The SNI router treats a
+connection whose ServerName equals `host` as local traffic and serves DoH and
+the API for it. A connection for any other name is handled by the tunnel.
+
+The `vps_ip` value is the public IPv4 address of this server. It is the address
+returned as the A record for restricted domains, and it is what clients end up
+connecting to for those domains. It must be a valid IP address.
+
+The `api_key` value is the shared secret that guards every `/api/*` request.
+Choose a long random string and keep it out of version control. A short or
+guessable key makes the management API available to anyone who finds it.
+
+## Policy
+
+The `upstream_dns` list names the recursive resolvers used for every query that
+is not answered locally. Kairo tries the entries in order and falls back to the
+next one when a resolver fails or times out, so two independent resolvers make
+the service more resilient.
+
+The `data_dir` path is where the runtime state files live. All paths inside it
+can be relative to the directory where Kairo was started. The directory is
+created if it does not exist, and its three files are described below.
+
+The `ip_source` section controls the automatic allowlist generator. Its
+`domains_file` is a plain text file listing the domains whose addresses should
+be allowlisted, for example the public address of a home router or a trusted
+workstation. The generator resolves both A and AAAA records for each domain and
+merges the results into the allowlist without removing existing entries. The
+`interval` value, in seconds, controls how often the generator runs in the
+background. A value of zero disables the background job, and generation can
+still be triggered manually with the `-gen-ips` flag or the API endpoint.
+
+## Listeners
+
+The `listen` section defines four addresses, each a host and port pair.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `listen.dns` | `:53` | Plain DNS over UDP and TCP. |
+| `listen.dot` | `:853` | DNS over TLS, requires a certificate. |
+| `listen.https` | `:443` | The SNI router carrying DoH, the API, and the tunnel. |
+| `listen.http` | `127.0.0.1:8080` | Loopback HTTP backend for reverse proxies. |
+
+Binding `:53` and `:443` requires root or the relevant capabilities. In Docker
+this is handled by host networking; on a bare server you either run as root or
+grant the binary the `NET_BIND_SERVICE` capability.
+
+## TLS
+
+The `tls.cert` and `tls.key` values point at a certificate chain and its private
+key, normally issued for the `host` name. They are used for the DoT listener and
+for terminating TLS on the SNI router so that DoH and the API can be served
+directly over HTTPS.
+
+When the TLS section is empty, the SNI router does not terminate TLS. In that
+case `host_backend` names a local TLS endpoint, typically a reverse proxy on
+`127.0.0.1:8443`, and the router forwards all `host` traffic to it unchanged.
+This keeps DoH and the API reachable at the public hostname while the proxy
+handles the certificates.
+
+## TTL and rates
+
+The `ttl` value is the lifetime, in seconds, of the synthesized A records that
+Kairo returns for restricted domains. The default of 300 keeps responses
+reasonably cached while still letting a domain leave the restricted list take
+effect quickly.
+
+The `rate` section limits the global request throughput. The `dns` and
+`dns_burst` values apply to the DNS servers and the DoH endpoint together, and
+the `api` and `api_burst` values apply to the management API. The first value is
+the sustained rate per second and the second is the burst allowed at once.
+Requests beyond the limit are answered with a rate limit error.
+
+## The data directory
+
+The data directory holds three plain text files. Each file is read on startup
+and on every change, ignoring blank lines and lines that start with `#`. The
+files are managed by the API and by the generator, and they can also be edited
+by hand while the service is running.
+
+`domains.txt` lists restricted domains, one per line. Restricting `youtube.com`
+also covers `www.youtube.com` and every deeper subdomain. `allowed.txt` lists
+client IP addresses, one per line. Loopback addresses are always treated as
+allowed and never need to be listed. `domain.txt` is the input for the IP
+generator named by `ip_source.domains_file`.
+
+## Command line flags
+
+| Flag | Description |
+| --- | --- |
+| `-config path` | Path to the configuration file, default `config.json`. |
+| `-gen-ips` | Resolve the IP source file into the allowlist and exit. |
+| `-version` | Print the version and exit. |
+
+The `-gen-ips` flag is useful in a cron job or during first setup. It performs a
+single generation pass and exits, which makes the result visible in the log and
+in `allowed.txt` without starting the full service.

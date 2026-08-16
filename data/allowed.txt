@@ -1,0 +1,4 @@
+# Allowlisted client IPs. Only these clients are split-routed: they receive the
+# VPS IP for restricted domains and may use the transparent SNI tunnel. The
+# loopback addresses are always allowed and do not need to be listed here.
+# This file is managed through the API (/api/allow) and the IP generator.
