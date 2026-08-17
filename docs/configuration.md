@@ -111,9 +111,15 @@ could add the VPS IP to its hosts file and reach the tunnel through nginx, and
 the allowlist would not see the real client.
 
 Point `listen.https` at a loopback-only port, enable `proxy_protocol`, and have
-nginx send the header with `proxy_protocol on;` for the destinations it hands
-to Kairo. Never enable this on a listener reachable by untrusted peers, since a
-remote client could forge the header.
+nginx attach the header with `proxy_protocol on;` on the public listener, which
+carries the real client address because that listener's peer is the client
+itself. Backends that do not want the header need an internal strip hop. Never
+enable this on a listener reachable by untrusted peers, since a remote client
+could forge the header. See `nginx.conf.example` for a working setup. Do not
+route the tunnel through a second nginx hop that re-emits the header: nginx
+only re-emits the address it parsed from a PROXY header if the stream realip
+module rewrites `$remote_addr`, otherwise the header carries the hop's own
+loopback address and every client looks allowlisted.
 
 ## TLS
 
