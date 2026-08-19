@@ -1,0 +1,63 @@
+# Kairo configuration — a single YAML file for runtime settings.
+# Copy this to config.yaml, fill in your values, then run: kairo run
+#
+# The routing policy lives in separate plain-text files under data_dir:
+#   allowed.txt   - client IPs allowed to be split-routed
+#   domains.txt   - restricted domains (subdomains covered automatically)
+#   domain.txt    - ip_source domains the allowlist generator resolves
+# These are edited through the API (/api/allow, /api/restricted) or by hand.
+
+# Public hostname for DoH and the API (matched via SNI).
+host: dns.example.com
+
+# Where host SNI goes when we are NOT terminating TLS. Leave empty to have
+# Kairo terminate TLS itself using tls.cert/tls.key below.
+host_backend: ""
+
+# Public IP of this box, handed out for restricted domains.
+vps_ip: 1.2.3.4
+
+# Shared secret for /api/*. Keep it long and ugly.
+api_key: REPLACE_WITH_A_STRONG_SECRET
+
+# Upstream DNS resolvers.
+upstream_dns:
+  - 1.1.1.1:53
+  - 8.8.8.8:53
+
+listen:
+  dns: ":53"
+  dot: ":853"
+  https: ":443"            # the SNI router: DoH, API and the tunnel
+  http: "127.0.0.1:8080"   # loopback backend for reverse proxies
+  metrics: "127.0.0.1:9090" # Prometheus endpoint (loopback-only, not exposed publicly)
+
+# Certificates for DoT and the SNI-terminated DoH/API endpoints. Required only
+# if host_backend is empty.
+tls:
+  cert: /etc/letsencrypt/live/dns.example.com/fullchain.pem
+  key: /etc/letsencrypt/live/dns.example.com/privkey.pem
+
+# Directory holding the policy text files.
+data_dir: data
+
+# TTL for the fake A records handed out to allowlisted clients.
+ttl: 300
+
+# Global per-second limits for DNS and API.
+rate:
+  dns: 200
+  dns_burst: 400
+  api: 20
+  api_burst: 40
+
+# Trust the client address in a PROXY protocol v1 header, but only from
+# loopback peers (a local nginx fronting :443).
+proxy_protocol: false
+
+# Allowlist generator: resolve the domains in `domains_file`, allowlist the
+# results, repeat every `interval` seconds (0 disables the background job).
+# Run "kairo gen-ips" after editing the file.
+ip_source:
+  domains_file: domain.txt
+  interval: 300

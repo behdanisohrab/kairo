@@ -1,4 +1,7 @@
-package main
+// Package sni implements the SNI router that makes split routing real: one
+// listener on :443 where every connection is decided by the name in its TLS
+// handshake.
+package sni
 
 import (
 	"bufio"
@@ -6,30 +9,34 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"kairo/internal/config"
+	"kairo/internal/metrics"
+	"kairo/internal/netutil"
+	"kairo/internal/state"
 )
 
-// StartSNI is the router that makes the split routing real. One listener on
-// :443, and every connection is decided by the name in its TLS handshake:
-// our own hostname gets DoH and the API, anything else gets tunneled to the
-// destination for allowlisted clients.
-func StartSNI(s *State, handler http.Handler) {
+// Start runs the SNI router on cfg.Listen.HTTPS, serving the given HTTP handler
+// for our own hostname and tunnelling everything else to allowlisted clients.
+func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http.Handler) {
 	ln, err := net.Listen("tcp", cfg.Listen.HTTPS)
 	if err != nil {
-		log.Fatalf("sni: %v", err)
+		slog.Error("SNI router listen", "addr", cfg.Listen.HTTPS, "error", err)
+		return
 	}
-	log.Printf("SNI router on %s", cfg.Listen.HTTPS)
+	slog.Info("starting SNI router", "addr", cfg.Listen.HTTPS)
 
 	var tlsConfig *tls.Config
 	if cfg.TLS.Cert != "" && cfg.TLS.Key != "" {
 		cer, err := tls.LoadX509KeyPair(cfg.TLS.Cert, cfg.TLS.Key)
 		if err != nil {
-			log.Printf("SNI TLS termination disabled: %v", err)
+			slog.Warn("SNI TLS termination disabled", "error", err)
 		} else {
 			tlsConfig = &tls.Config{
 				Certificates: []tls.Certificate{cer},
@@ -38,7 +45,7 @@ func StartSNI(s *State, handler http.Handler) {
 		}
 	}
 	if tlsConfig == nil && cfg.HostBackend == "" {
-		log.Printf("warning: neither tls.cert/key nor host_backend is set; DoH/API over %s will not be served", cfg.Listen.HTTPS)
+		slog.Warn("neither tls.cert/key nor host_backend is set; DoH/API will not be served", "addr", cfg.Listen.HTTPS)
 	}
 
 	for {
@@ -46,11 +53,11 @@ func StartSNI(s *State, handler http.Handler) {
 		if err != nil {
 			continue
 		}
-		go s.handleConn(conn, handler, tlsConfig)
+		go handleConn(cfg, st, m, conn, handler, tlsConfig)
 	}
 }
 
-func (s *State) handleConn(clientConn net.Conn, handler http.Handler, tlsConfig *tls.Config) {
+func handleConn(cfg *config.Config, st *state.State, m *metrics.Metrics, clientConn net.Conn, handler http.Handler, tlsConfig *tls.Config) {
 	defer clientConn.Close()
 
 	// Everything is read through a bufio.Reader so a PROXY protocol header can
@@ -58,11 +65,12 @@ func (s *State) handleConn(clientConn net.Conn, handler http.Handler, tlsConfig 
 	// have flushed into the buffer.
 	reader := bufio.NewReader(clientConn)
 
-	peerIP := remoteIPAddr(clientConn.RemoteAddr())
+	peerIP := netutil.RemoteIPAddr(clientConn.RemoteAddr())
 	if cfg.ProxyProtocol && peerIP != nil && peerIP.IsLoopback() {
 		src, err := readProxyHeader(reader)
 		if err != nil {
-			log.Printf("proxy protocol from %s: %v", peerIP, err)
+			slog.Warn("proxy protocol error", "peer", peerIP, "error", err)
+			recordSNI(m, "proxy_error")
 			return
 		}
 		if src != nil {
@@ -77,33 +85,44 @@ func (s *State) handleConn(clientConn net.Conn, handler http.Handler, tlsConfig 
 	}
 	_ = clientConn.SetReadDeadline(time.Time{})
 
-	sni := strings.ToLower(strings.TrimSpace(hello.ServerName))
-	if sni == "" {
+	sniName := strings.ToLower(strings.TrimSpace(hello.ServerName))
+	if sniName == "" {
+		recordSNI(m, "malformed")
 		writeMalformed(clientConn)
 		return
 	}
 
 	// Our own hostname: terminate TLS (or hand it to a reverse proxy) and
 	// serve DoH and the API.
-	if cfg.Host != "" && sni == cfg.Host {
+	if cfg.Host != "" && sniName == cfg.Host {
+		recordSNI(m, "host")
 		if tlsConfig != nil {
-			s.serveTLS(clientConn, reader, peeked, handler, tlsConfig)
+			serveTLS(cfg, clientConn, reader, peeked, handler, tlsConfig)
 		} else if cfg.HostBackend != "" {
-			s.tunnel(clientConn, reader, peeked, cfg.HostBackend)
+			tunnel(clientConn, reader, peeked, cfg.HostBackend)
 		} else {
-			log.Printf("no handler for host SNI %q", sni)
+			slog.Warn("no handler for host SNI", "sni", sniName)
 		}
 		return
 	}
 
 	// Everything else is a split-routed destination, and the allowlist gate
 	// applies again here. Trusting only the DNS answer would be naive.
-	if !s.isAllowedIP(peerIP) {
-		log.Printf("rejected %s: SNI %s not allowlisted", peerIP, sni)
+	if !st.IsAllowedIP(peerIP) {
+		recordSNI(m, "rejected")
+		slog.Info("SNI connection rejected: not allowlisted", "peer", peerIP, "sni", sniName)
 		return
 	}
 
-	s.tunnel(clientConn, reader, peeked, s.tunnelAddr(sni))
+	recordSNI(m, "tunneled")
+	tunnel(clientConn, reader, peeked, st.TunnelAddr(sniName))
+}
+
+// recordSNI counts one SNI router decision by outcome.
+func recordSNI(m *metrics.Metrics, outcome string) {
+	if m != nil {
+		m.SNIConnections.WithLabelValues(outcome).Inc()
+	}
 }
 
 // readProxyHeader parses a PROXY protocol v1 header, if the connection starts
@@ -146,10 +165,10 @@ func readProxyHeader(r *bufio.Reader) (net.IP, error) {
 // already swallowed so the destination still sees the full handshake. src is
 // where the rest of the client's bytes come from; it may buffer more than
 // clientConn exposes, so the raw conn is never read directly.
-func (s *State) tunnel(clientConn net.Conn, src io.Reader, peeked io.Reader, backendAddr string) {
+func tunnel(clientConn net.Conn, src io.Reader, peeked io.Reader, backendAddr string) {
 	backend, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
 	if err != nil {
-		log.Printf("tunnel dial %s: %v", backendAddr, err)
+		slog.Error("tunnel dial failed", "backend", backendAddr, "error", err)
 		return
 	}
 	defer backend.Close()
@@ -178,14 +197,14 @@ func (s *State) tunnel(clientConn net.Conn, src io.Reader, peeked io.Reader, bac
 
 // serveTLS wraps the already-peeked connection so the TLS layer reads the
 // ClientHello exactly once, then serves one HTTP session over it.
-func (s *State) serveTLS(clientConn net.Conn, src io.Reader, peeked io.Reader, handler http.Handler, tlsConfig *tls.Config) {
+func serveTLS(cfg *config.Config, clientConn net.Conn, src io.Reader, peeked io.Reader, handler http.Handler, tlsConfig *tls.Config) {
 	wrap := &bufferedConn{
 		Conn: clientConn,
 		r:    io.MultiReader(peeked, src),
 	}
 	tconn := tls.Server(wrap, tlsConfig)
 	if err := tconn.Handshake(); err != nil {
-		log.Printf("tls handshake for %s failed: %v", cfg.Host, err)
+		slog.Warn("TLS handshake failed", "host", cfg.Host, "error", err)
 		return
 	}
 	srv := &http.Server{
@@ -193,7 +212,7 @@ func (s *State) serveTLS(clientConn net.Conn, src io.Reader, peeked io.Reader, h
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if err := srv.Serve(newSingleConnListener(tconn)); err != nil && err != net.ErrClosed {
-		log.Printf("http over TLS for %s: %v", cfg.Host, err)
+		slog.Error("HTTP over TLS failed", "host", cfg.Host, "error", err)
 	}
 }
 

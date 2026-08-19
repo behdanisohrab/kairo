@@ -44,13 +44,14 @@ answers it receives.
 
 ## The components
 
-The service exposes four listeners. A plain DNS server on port 53 accepts UDP
+The service exposes five listeners. A plain DNS server on port 53 accepts UDP
 and TCP queries. A DNS over TLS server on port 853 provides the same answers
 over an encrypted connection. A DNS over HTTPS endpoint is served over the SNI
 router on port 443 and again over a loopback HTTP listener on port 8080 for use
 behind a reverse proxy. The SNI router itself lives on port 443 and carries both
 the DoH and API traffic for your hostname and the transparent tunnel for
-restricted domains.
+restricted domains. A separate loopback listener on port 9090 serves the
+Prometheus `/metrics` endpoint so it is never exposed publicly.
 
 All policy lives in a data directory as three plain text files. The `domains.txt`
 file lists restricted domains. The `allowed.txt` file lists client IPs. The

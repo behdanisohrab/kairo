@@ -1,13 +1,37 @@
-package main
+package sni
 
 import (
+	"bufio"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"kairo/internal/config"
+	"kairo/internal/state"
 )
+
+func dummyHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+}
+
+func newBufReader(s string) *bufio.Reader {
+	return bufio.NewReader(strings.NewReader(s))
+}
+
+func newTestState(t *testing.T) *state.State {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := state.NewState(&config.Config{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+	return st
+}
 
 // clientHelloBytes builds a real TLS ClientHello for the given server name,
 // the way a browser would send it.
@@ -36,7 +60,7 @@ func clientHelloBytes(serverName string) ([]byte, error) {
 
 // startRouter accepts one connection and feeds it to handleConn. stop() waits
 // until handleConn returns, so call it after closing the client connection.
-func startRouter(s *State) (addr string, stop func()) {
+func startRouter(cfg *config.Config, st *state.State) (addr string, stop func()) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		panic(err)
@@ -45,7 +69,7 @@ func startRouter(s *State) (addr string, stop func()) {
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
-			s.handleConn(conn, buildHandler(s), nil)
+			handleConn(cfg, st, nil, conn, dummyHandler(), nil)
 		}
 		close(done)
 	}()
@@ -78,10 +102,10 @@ func spinTunnelTarget(t *testing.T) (addr string, recv chan []byte) {
 	return ln.Addr().String(), recv
 }
 
-func TestSNIProxyProtocolGate(t *testing.T) {
-	cfg = &Config{ProxyProtocol: true, Host: "dns.test", VPSIP: "203.0.113.10"}
-	s := newTestState(t)
-	if _, err := s.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
+func TestProxyProtocolGate(t *testing.T) {
+	cfg := &config.Config{ProxyProtocol: true, Host: "dns.test", VPSIP: "203.0.113.10"}
+	st := newTestState(t)
+	if _, err := st.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
 		t.Fatalf("AddAllowed: %v", err)
 	}
 
@@ -92,9 +116,9 @@ func TestSNIProxyProtocolGate(t *testing.T) {
 
 	t.Run("allowlisted source in PROXY header is tunneled", func(t *testing.T) {
 		backendAddr, recv := spinTunnelTarget(t)
-		s.tunnelAddr = func(string) string { return backendAddr }
+		st.TunnelAddr = func(string) string { return backendAddr }
 
-		routerAddr, stop := startRouter(s)
+		routerAddr, stop := startRouter(cfg, st)
 		conn, err := net.Dial("tcp", routerAddr)
 		if err != nil {
 			t.Fatal(err)
@@ -119,9 +143,9 @@ func TestSNIProxyProtocolGate(t *testing.T) {
 
 	t.Run("unallowlisted source in PROXY header is rejected", func(t *testing.T) {
 		_, recv := spinTunnelTarget(t)
-		s.tunnelAddr = func(string) string { return "127.0.0.1:1" }
+		st.TunnelAddr = func(string) string { return "127.0.0.1:1" }
 
-		routerAddr, stop := startRouter(s)
+		routerAddr, stop := startRouter(cfg, st)
 		conn, err := net.Dial("tcp", routerAddr)
 		if err != nil {
 			t.Fatal(err)
@@ -139,10 +163,10 @@ func TestSNIProxyProtocolGate(t *testing.T) {
 	})
 }
 
-func TestSNIRejectsProxyHeaderWhenDisabled(t *testing.T) {
-	cfg = &Config{ProxyProtocol: false, Host: "dns.test", VPSIP: "203.0.113.10"}
-	s := newTestState(t)
-	if _, err := s.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
+func TestRejectsProxyHeaderWhenDisabled(t *testing.T) {
+	cfg := &config.Config{ProxyProtocol: false, Host: "dns.test", VPSIP: "203.0.113.10"}
+	st := newTestState(t)
+	if _, err := st.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
 		t.Fatalf("AddAllowed: %v", err)
 	}
 
@@ -152,9 +176,9 @@ func TestSNIRejectsProxyHeaderWhenDisabled(t *testing.T) {
 	}
 
 	_, recv := spinTunnelTarget(t)
-	s.tunnelAddr = func(string) string { return "127.0.0.1:1" }
+	st.TunnelAddr = func(string) string { return "127.0.0.1:1" }
 
-	routerAddr, stop := startRouter(s)
+	routerAddr, stop := startRouter(cfg, st)
 	conn, err := net.Dial("tcp", routerAddr)
 	if err != nil {
 		t.Fatal(err)
@@ -169,4 +193,67 @@ func TestSNIRejectsProxyHeaderWhenDisabled(t *testing.T) {
 	}
 	conn.Close()
 	stop()
+}
+
+func TestReadProxyHeader(t *testing.T) {
+	t.Run("plain TLS bytes are not a PROXY header", func(t *testing.T) {
+		r := newBufReader("\x16\x03\x01...tls")
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip != nil {
+			t.Errorf("ip = %v, want nil", ip)
+		}
+		rest, _ := io.ReadAll(r)
+		if string(rest) != "\x16\x03\x01...tls" {
+			t.Errorf("rest = %q, want original bytes", rest)
+		}
+	})
+
+	t.Run("parses TCP4 header", func(t *testing.T) {
+		r := newBufReader("PROXY TCP4 198.51.100.7 84.245.19.105 50210 443\r\nTLSBYTES")
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip == nil || ip.String() != "198.51.100.7" {
+			t.Errorf("ip = %v, want 198.51.100.7", ip)
+		}
+		rest, _ := io.ReadAll(r)
+		if string(rest) != "TLSBYTES" {
+			t.Errorf("rest = %q, want TLSBYTES", rest)
+		}
+	})
+
+	t.Run("parses TCP6 header", func(t *testing.T) {
+		r := newBufReader("PROXY TCP6 2001:db8::7 2001:db8::1 1234 443\r\n")
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip == nil || ip.String() != "2001:db8::7" {
+			t.Errorf("ip = %v, want 2001:db8::7", ip)
+		}
+	})
+
+	t.Run("UNKNOWN form carries no address", func(t *testing.T) {
+		r := newBufReader("PROXY UNKNOWN\r\n")
+		ip, err := readProxyHeader(r)
+		if err != nil {
+			t.Fatalf("readProxyHeader: %v", err)
+		}
+		if ip != nil {
+			t.Errorf("ip = %v, want nil", ip)
+		}
+	})
+
+	for _, bad := range []string{"PROXY TCP4 nope 1.2.3.4 1 2\r\n", "PROXY TCP7 1.2.3.4 1.2.3.4 1 2\r\n", "PROXY TCP4 1.2.3.4 1.2.3.4 1\r\n"} {
+		t.Run("rejects garbage "+bad[:20], func(t *testing.T) {
+			r := newBufReader(bad)
+			if _, err := readProxyHeader(r); err == nil {
+				t.Errorf("readProxyHeader(%q) should fail", bad)
+			}
+		})
+	}
 }

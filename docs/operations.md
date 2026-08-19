@@ -34,7 +34,7 @@ Wants=network-online.target
 User=kairo
 Group=kairo
 WorkingDirectory=/opt/kairo
-ExecStart=/opt/kairo/kairo -config /opt/kairo/config.json
+ExecStart=/opt/kairo/kairo run --config /opt/kairo/config.yaml
 Restart=always
 RestartSec=3
 LimitNOFILE=65536
@@ -60,8 +60,8 @@ the real client addresses and binds port 53 directly.
 
 ```bash
 mkdir -p data
-cp config.json data/config.json
-# edit data/config.json
+cp config.yaml.sample data/config.yaml
+# edit data/config.yaml
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -69,6 +69,25 @@ docker compose logs -f
 The data directory is mounted at `/data` inside the container, so the policy
 files and any certificate you place there survive container rebuilds. Set
 `data_dir` to `/data` and point the TLS fields at files inside it.
+
+## Metrics
+
+Kairo exposes Prometheus metrics at `GET /metrics` on a dedicated listener,
+bound to `127.0.0.1:9090` by default (`listen.metrics`). It is never served on
+the public DoH/API/SNI surface, so it is not exposed to the internet unless you
+deliberately change the bind address or front it with a reverse proxy. The
+registry includes DNS queries by type and outcome, SNI connections by outcome,
+HTTP request counts, rate-limited requests, and live gauges for the number of
+allowlisted clients and restricted domains.
+
+Point your Prometheus scraper at it, or expose it only to your monitoring
+network:
+
+```yaml
+# config.yaml
+listen:
+  metrics: "127.0.0.1:9090"
+```
 
 ## Obtaining a certificate
 
@@ -111,19 +130,19 @@ If your trusted clients have stable public names, the IP generator keeps the
 allowlist up to date without manual API calls. List the names in
 `domain.txt`, set `ip_source.interval` in seconds, and Kairo resolves them in
 the background. The interval of 300 seconds matches a typical dynamic DNS
-update rate. For a one-off refresh, run `kairo -config config.json -gen-ips`
-or call `POST /api/generate`. Each run merges new addresses and never removes
-existing ones, so a temporarily unresolvable name does not drop a working
-client.
+update rate. For a one-off refresh, run `kairo gen-ips` (with `--config` if your
+file is not `config.yaml`) or call `POST /api/generate`. Each run merges new
+addresses and never removes existing ones, so a temporarily unresolvable name
+does not drop a working client.
 
 ## Backups and recovery
 
-Everything that matters is in three files: `config.json`, and the `data`
-directory with `allowed.txt`, `domains.txt`, and `domain.txt`. A nightly copy
-of these is a complete backup. Restoring them and starting the service brings
-the whole routing setup back. The files are written atomically by Kairo, so a
-copy taken at any moment is either the old or the new version and never a
-partially written one.
+Everything that matters is in the `config.yaml` file and the `data` directory
+with `allowed.txt`, `domains.txt`, and `domain.txt`. A nightly copy of these is
+a complete backup. Restoring them and starting the service brings the whole
+routing setup back. The files are written atomically by Kairo, so a copy taken
+at any moment is either the old or the new version and never a partially
+written one.
 
 ## Routine maintenance
 

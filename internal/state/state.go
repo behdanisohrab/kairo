@@ -1,10 +1,12 @@
-package main
+// Package state owns the routing policy (allowlist + restricted domains),
+// persisted as plain text and hot-reloaded when the files change.
+package state
 
 import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,34 +14,39 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"kairo/internal/config"
+	"kairo/internal/fileutil"
+	"kairo/internal/resolve"
 )
 
 const (
-	allowedFilename = "allowed.txt" // client IPs allowed to be split-routed
-	domainsFilename = "domains.txt" // restricted domains
+	// AllowedFilename is the file holding client IPs allowed to be split-routed.
+	AllowedFilename = "allowed.txt"
+	// DomainsFilename is the file holding the restricted domains.
+	DomainsFilename = "domains.txt"
 )
 
-// State owns the two policy lists, persisted as plain text in the data dir and
-// hot-reloaded whenever the files change on disk.
+// State owns the two policy lists. Use NewState to construct one.
 type State struct {
-	mu           sync.RWMutex
-	allowed      map[string]struct{}
-	domains      map[string]struct{}
-	allowedM     time.Time
-	domainsM     time.Time
-	allowedPath  string
-	domainsPath  string
-	ipSourcePath string
+	mu               sync.RWMutex
+	allowed          map[string]struct{}
+	domains          map[string]struct{}
+	allowedM         time.Time
+	domainsM         time.Time
+	allowedPath      string
+	domainsPath      string
+	ipSourcePath     string
+	ipSourceInterval time.Duration
 
-	// resolver is used by the IP generator; replaceable in tests.
-	resolver func(domain string) []net.IP
+	// Resolver is used by the IP generator; replaceable in tests.
+	Resolver func(domain string) []net.IP
 
-	// tunnelAddr picks where the SNI tunnel goes for a given destination name;
-	// replaceable in tests.
-	tunnelAddr func(domain string) string
+	// TunnelAddr picks the SNI tunnel destination; replaceable in tests.
+	TunnelAddr func(domain string) string
 }
 
-func NewState(cfg *Config) (*State, error) {
+func NewState(cfg *config.Config) (*State, error) {
 	dataDir := cfg.DataDir
 	if dataDir == "" {
 		dataDir = "."
@@ -57,13 +64,14 @@ func NewState(cfg *Config) (*State, error) {
 	}
 
 	s := &State{
-		allowed:      make(map[string]struct{}),
-		domains:      make(map[string]struct{}),
-		allowedPath:  filepath.Join(dataDir, allowedFilename),
-		domainsPath:  filepath.Join(dataDir, domainsFilename),
-		ipSourcePath: ipSource,
-		resolver:     defaultResolver,
-		tunnelAddr: func(domain string) string {
+		allowed:          make(map[string]struct{}),
+		domains:          make(map[string]struct{}),
+		allowedPath:      filepath.Join(dataDir, AllowedFilename),
+		domainsPath:      filepath.Join(dataDir, DomainsFilename),
+		ipSourcePath:     ipSource,
+		ipSourceInterval: time.Duration(cfg.IPSource.Interval) * time.Second,
+		Resolver:         resolve.DefaultResolver(cfg.Upstream),
+		TunnelAddr: func(domain string) string {
 			return net.JoinHostPort(domain, "443")
 		},
 	}
@@ -74,8 +82,7 @@ func NewState(cfg *Config) (*State, error) {
 	return s, nil
 }
 
-// load reads both policy files. Missing files are just an empty policy; a
-// fresh data dir must not be a showstopper.
+// load reads both policy files. Missing files mean an empty policy.
 func (s *State) load() error {
 	allowed, err := readStateFile(s.allowedPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -97,12 +104,11 @@ func (s *State) load() error {
 	}
 	s.mu.Unlock()
 
-	log.Printf("state: %d restricted domains, %d allowlisted clients", len(s.domains), len(s.allowed))
+	slog.Info("state loaded", "restricted", len(s.domains), "allowlisted", len(s.allowed))
 	return nil
 }
 
-// Watch reloads the policy files when they change. Polling is cheap and
-// avoids another dependency; edits show up within a few seconds.
+// Watch reloads the policy files when they change (polling, cheap).
 func (s *State) Watch(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -131,7 +137,7 @@ func (s *State) reloadFile(path string, mtime *time.Time, name string) {
 	}
 	lines, err := readStateFile(path)
 	if err != nil {
-		log.Printf("reload %s: %v", name, err)
+		slog.Error("reload failed", "list", name, "error", err)
 		return
 	}
 	s.mu.Lock()
@@ -144,18 +150,15 @@ func (s *State) reloadFile(path string, mtime *time.Time, name string) {
 	*mtime = info.ModTime()
 	count := len(lines)
 	s.mu.Unlock()
-	log.Printf("reloaded %s: %d entries", name, count)
+	slog.Info("reloaded list", "list", name, "entries", count)
 }
 
-// ---------------------------------------------------------------------------
-// Allowlist
-// ---------------------------------------------------------------------------
-
-func (s *State) isAllowedIP(ip net.IP) bool {
+// IsAllowedIP reports whether the IP may be split-routed.
+func (s *State) IsAllowedIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	// local tools and health checks always pass
+	// Local tools and health checks always pass.
 	if ip.IsLoopback() {
 		return true
 	}
@@ -199,22 +202,14 @@ func (s *State) AllowedCount() int {
 	return len(s.allowed)
 }
 
-func (s *State) IPSourcePath() string {
-	return s.ipSourcePath
-}
-
 func (s *State) saveAllowed() error {
 	return writeStateFile(s.allowedPath, sortedKeys(s.allowed))
 }
 
-// ---------------------------------------------------------------------------
-// Restricted domains
-// ---------------------------------------------------------------------------
-
-// isRestricted matches a name and its parents, so restricting youtube.com
+// IsRestricted matches a name and its parents, so restricting youtube.com
 // also catches www.youtube.com and friends.
-func (s *State) isRestricted(name string) bool {
-	name = normalizeDomain(name)
+func (s *State) IsRestricted(name string) bool {
+	name = config.NormalizeDomain(name)
 	if name == "" {
 		return false
 	}
@@ -233,7 +228,7 @@ func (s *State) isRestricted(name string) bool {
 }
 
 func (s *State) AddRestricted(domain string) (added bool, err error) {
-	domain = normalizeDomain(domain)
+	domain = config.NormalizeDomain(domain)
 	if domain == "" {
 		return false, fmt.Errorf("empty domain")
 	}
@@ -247,7 +242,7 @@ func (s *State) AddRestricted(domain string) (added bool, err error) {
 }
 
 func (s *State) RemoveRestricted(domain string) (removed bool, err error) {
-	domain = normalizeDomain(domain)
+	domain = config.NormalizeDomain(domain)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.domains[domain]; !ok {
@@ -273,9 +268,10 @@ func (s *State) saveDomains() error {
 	return writeStateFile(s.domainsPath, sortedKeys(s.domains))
 }
 
-// ---------------------------------------------------------------------------
-// IP generation from the ip_source file
-// ---------------------------------------------------------------------------
+// IPSourcePath returns the path to the ip_source domains file.
+func (s *State) IPSourcePath() string {
+	return s.ipSourcePath
+}
 
 // GenerateIPs resolves every domain in the ip source file and merges the
 // addresses into the allowlist. Merging (not replacing) means a temporarily
@@ -291,10 +287,10 @@ func (s *State) GenerateIPs() (added int, failed int, err error) {
 
 	var resolved []net.IP
 	for _, d := range domains {
-		ips := s.resolver(d)
+		ips := s.Resolver(d)
 		if len(ips) == 0 {
 			failed++
-			log.Printf("ip-source: no addresses for %q", d)
+			slog.Warn("ip-source: no addresses", "domain", d)
 			continue
 		}
 		resolved = append(resolved, ips...)
@@ -321,13 +317,15 @@ func (s *State) GenerateIPs() (added int, failed int, err error) {
 	return added, failed, nil
 }
 
+// RunGenerator regenerates the allowlist on a schedule until ctx is done. It is
+// a no-op when the configured interval is zero.
 func (s *State) RunGenerator(ctx context.Context) {
-	if cfg.IPSource.Interval <= 0 {
+	if s.ipSourceInterval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(time.Duration(cfg.IPSource.Interval) * time.Second)
+	ticker := time.NewTicker(s.ipSourceInterval)
 	defer ticker.Stop()
-	log.Printf("ip-source: generating allowlist every %ds from %s", cfg.IPSource.Interval, s.ipSourcePath)
+	slog.Info("ip-source: generating allowlist", "interval", s.ipSourceInterval.String(), "source", s.ipSourcePath)
 	for {
 		select {
 		case <-ctx.Done():
@@ -335,17 +333,13 @@ func (s *State) RunGenerator(ctx context.Context) {
 		case <-ticker.C:
 			added, failed, err := s.GenerateIPs()
 			if err != nil {
-				log.Printf("ip-source: %v", err)
+				slog.Error("ip-source generation failed", "error", err)
 				continue
 			}
-			log.Printf("ip-source: %d new addresses, %d unresolved", added, failed)
+			slog.Info("ip-source: allowlist updated", "added", added, "unresolved", failed)
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// File helpers
-// ---------------------------------------------------------------------------
 
 // readStateFile reads a list file, skipping blank lines and # comments.
 func readStateFile(path string) ([]string, error) {
@@ -373,32 +367,7 @@ func writeStateFile(path string, list []string) error {
 		sb.WriteString(v)
 		sb.WriteByte('\n')
 	}
-	return atomicWrite(path, []byte(sb.String()))
-}
-
-// atomicWrite writes to a temp file and renames, so a crash mid-write never
-// leaves a half-baked policy file behind.
-func atomicWrite(path string, data []byte) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fileutil.AtomicWrite(path, []byte(sb.String()))
 }
 
 func normalizeIPSet(list []string) map[string]struct{} {
@@ -414,7 +383,7 @@ func normalizeIPSet(list []string) map[string]struct{} {
 func normalizeDomainSet(list []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(list))
 	for _, v := range list {
-		if d := normalizeDomain(v); d != "" {
+		if d := config.NormalizeDomain(v); d != "" {
 			out[d] = struct{}{}
 		}
 	}

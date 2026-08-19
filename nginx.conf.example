@@ -1,5 +1,5 @@
 # Reverse-proxy mode: when you prefer to terminate TLS with nginx, leave
-# tls.cert/tls.key empty in config.json and proxy DoH + the API to the plain
+# tls.cert/tls.key empty in config.yaml and proxy DoH + the API to the plain
 # HTTP backend (config "http": "127.0.0.1:8080").
 #
 # The stream block below fronts :443 and attaches a PROXY protocol header with
