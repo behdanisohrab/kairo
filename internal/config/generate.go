@@ -52,7 +52,7 @@ func GenerateConfigs(args []string) error {
 	}
 
 	fmt.Printf("wrote %s and the policy files under %s\n", filepath.Join(dir, "config.yaml"), dataDir)
-	fmt.Println("edit config.yaml (host, vps_ip, tls paths), then run: kairo run")
+	fmt.Println("edit config.yaml (host, vps_ip, acme.email), then run: kairo run")
 	return nil
 }
 
@@ -73,6 +73,7 @@ func defaultConfigYAML(apiKey string) []byte {
 			Metrics: "127.0.0.1:9090",
 		},
 		TLS:     TLSConfig{Cert: "/etc/letsencrypt/live/dns.example.com/fullchain.pem", Key: "/etc/letsencrypt/live/dns.example.com/privkey.pem"},
+		ACME:    ACMEConfig{Email: "", Storage: "data/certs", Directory: "", RenewBeforeDays: 30, HTTPListen: ":80"},
 		DataDir: "data",
 		TTL:     300,
 		Rate: RateConfig{

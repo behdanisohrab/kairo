@@ -19,6 +19,10 @@ import (
 	"kairo/internal/state"
 )
 
+// GetCertificate supplies the TLS certificate for DoT (and, via the SNI router,
+// for DoH/API). It matches tls.Config.GetCertificate.
+type GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+
 // Server carries everything a request needs to be answered: the config, the
 // policy state, the version string, the rate limiters and the metrics.
 type Server struct {
@@ -26,18 +30,21 @@ type Server struct {
 	st         *state.State
 	Version    string
 	Metrics    *metrics.Metrics
+	getCert    GetCertificate
 	start      time.Time
 	dnsLimiter *rate.Limiter
 	apiLimiter *rate.Limiter
 }
 
-// New wires up a Server from a loaded config, policy state and metric registry.
-func New(cfg *config.Config, st *state.State, version string, m *metrics.Metrics) *Server {
+// New wires up a Server from a loaded config, policy state, metric registry and
+// a TLS certificate source. getCert may be nil, in which case DoT is disabled.
+func New(cfg *config.Config, st *state.State, version string, m *metrics.Metrics, getCert GetCertificate) *Server {
 	return &Server{
 		cfg:        cfg,
 		st:         st,
 		Version:    version,
 		Metrics:    m,
+		getCert:    getCert,
 		start:      time.Now(),
 		dnsLimiter: rate.NewLimiter(rate.Limit(cfg.Rate.DNS), cfg.Rate.DNSBurst),
 		apiLimiter: rate.NewLimiter(rate.Limit(cfg.Rate.API), cfg.Rate.APIBurst),
@@ -63,20 +70,15 @@ func (s *Server) StartDNS(listen string) {
 }
 
 // StartDoT runs the DNS-over-TLS listener on cfg.Listen.DoT, if a certificate
-// is configured.
+// source is configured.
 func (s *Server) StartDoT() {
-	if s.cfg.TLS.Cert == "" || s.cfg.TLS.Key == "" {
-		slog.Warn("DoT disabled: no TLS certificate configured", "addr", s.cfg.Listen.DoT)
-		return
-	}
-	cer, err := tls.LoadX509KeyPair(s.cfg.TLS.Cert, s.cfg.TLS.Key)
-	if err != nil {
-		slog.Warn("DoT disabled: failed to load certificate", "addr", s.cfg.Listen.DoT, "error", err)
+	if s.getCert == nil {
+		slog.Warn("DoT disabled: no certificate source configured", "addr", s.cfg.Listen.DoT)
 		return
 	}
 	ln, err := tls.Listen("tcp", s.cfg.Listen.DoT, &tls.Config{
-		Certificates: []tls.Certificate{cer},
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: s.getCert,
+		MinVersion:     tls.VersionTLS12,
 	})
 	if err != nil {
 		slog.Error("DoT listen", "addr", s.cfg.Listen.DoT, "error", err)

@@ -92,16 +92,24 @@ listen:
 ## Obtaining a certificate
 
 DoT and the SNI-based DoH endpoint present a certificate for the `host` name.
-Certbot issues one with a standalone challenge while the port is free, or you
-can use any other ACME client.
+
+The recommended way is to let Kairo manage it automatically with lego and the
+`http-01` challenge. Set `acme.email` in the config, make sure port 80 is open
+and forwarded to the VPS, and confirm `host` resolves to `vps_ip`. On the first
+start Kairo registers an ACME account, obtains the certificate and renews it
+before it expires; the account key and certificate live under
+`<data_dir>/certs` (inside the `/data` volume in Docker).
+
+Alternatively, point `tls.cert`/`tls.key` at hand-managed files, e.g. from
+certbot, while `acme.email` is empty:
 
 ```bash
 sudo apt install certbot
 sudo certbot certonly --standalone -d dns.example.com
 ```
 
-The certificate files should be readable by the service account. A renewal hook
-keeps the service in sync with the new certificate:
+With hand-managed files, a renewal hook keeps the service in sync with the new
+certificate:
 
 ```bash
 sudo certbot renew --deploy-hook "systemctl restart kairo"

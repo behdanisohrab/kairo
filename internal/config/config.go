@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,7 @@ type Config struct {
 	Upstream    []string     `yaml:"upstream_dns"`
 	Listen      ListenConfig `yaml:"listen"`
 	TLS         TLSConfig    `yaml:"tls"`
+	ACME        ACMEConfig   `yaml:"acme"`
 	DataDir     string       `yaml:"data_dir"`
 	TTL         uint32       `yaml:"ttl"` // TTL for the fake A records
 	Rate        RateConfig   `yaml:"rate"`
@@ -56,6 +58,25 @@ type TLSConfig struct {
 	Key  string `yaml:"key"`
 }
 
+// ACMEConfig drives automatic certificate management through Let's Encrypt
+// (via github.com/go-acme/lego) with the http-01 challenge. Leave email empty
+// to disable ACME and fall back to tls.cert/tls.key.
+type ACMEConfig struct {
+	// Email is the address used to register the ACME account.
+	Email string `yaml:"email"`
+	// Storage is where the account key and issued certificate are kept.
+	// Defaults to <data_dir>/certs when empty.
+	Storage string `yaml:"storage"`
+	// Directory is the ACME directory URL. Empty means Let's Encrypt production.
+	Directory string `yaml:"directory"`
+	// RenewBeforeDays renews the certificate when it expires within this many
+	// days. Defaults to 30.
+	RenewBeforeDays int `yaml:"renew_before_days"`
+	// HTTPListen is the address the http-01 challenge is served on. It must be
+	// reachable from the internet on port 80. Defaults to ":80".
+	HTTPListen string `yaml:"http_listen"`
+}
+
 // RateConfig is a blunt instrument: global per-second limits for DNS and API.
 type RateConfig struct {
 	DNS      int `yaml:"dns"`
@@ -81,6 +102,10 @@ func DefaultConfig() *Config {
 			DNSBurst: 400,
 			API:      20,
 			APIBurst: 40,
+		},
+		ACME: ACMEConfig{
+			RenewBeforeDays: 30,
+			HTTPListen:      ":80",
 		},
 	}
 }
@@ -135,6 +160,24 @@ func NormalizeAndValidate(cfg *Config) error {
 	}
 	if cfg.Rate.APIBurst <= 0 {
 		cfg.Rate.APIBurst = 40
+	}
+
+	if cfg.ACME.Email != "" {
+		if cfg.Host == "" {
+			return fmt.Errorf("acme.email requires host")
+		}
+		if cfg.TLS.Cert != "" || cfg.TLS.Key != "" {
+			return fmt.Errorf("configure either acme.email (automatic certificates) or tls.cert/tls.key (static certificates), not both")
+		}
+		if cfg.ACME.Storage == "" {
+			cfg.ACME.Storage = filepath.Join(cfg.DataDir, "certs")
+		}
+		if cfg.ACME.HTTPListen == "" {
+			cfg.ACME.HTTPListen = ":80"
+		}
+		if cfg.ACME.RenewBeforeDays <= 0 {
+			cfg.ACME.RenewBeforeDays = 30
+		}
 	}
 	return nil
 }

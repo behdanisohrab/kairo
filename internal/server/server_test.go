@@ -24,7 +24,7 @@ func newTestServer(t *testing.T) (*Server, *state.State) {
 		t.Fatalf("NewState: %v", err)
 	}
 	m := metrics.New(func() int { return st.AllowedCount() }, func() int { return st.RestrictedCount() })
-	srv := New(&config.Config{VPSIP: "203.0.113.10", TTL: 60}, st, "test", m)
+	srv := New(&config.Config{VPSIP: "203.0.113.10", TTL: 60}, st, "test", m, nil)
 	return srv, st
 }
 
@@ -171,7 +171,7 @@ func TestMetricsEndpointWorksWithNilMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewState: %v", err)
 	}
-	srv := New(&config.Config{VPSIP: "203.0.113.10", TTL: 60}, st, "test", nil)
+	srv := New(&config.Config{VPSIP: "203.0.113.10", TTL: 60}, st, "test", nil, nil)
 
 	handler := srv.BuildHandler()
 	rr := httptest.NewRecorder()

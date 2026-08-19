@@ -9,7 +9,7 @@ services:
     # allowlist-based split routing.
     network_mode: host
     volumes:
+      # /data persists both the policy files (data_dir) and the ACME-managed
+      # TLS certificate (stored under <data_dir>/certs by default), so the
+      # certificate survives container recreation.
       - ./configs:/data
-      # Certificates for DoT and the SNI-based DoH/API endpoints. Read-only so
-      # the host letsencrypt process keeps owning and renewing them.
-      - /etc/letsencrypt:/etc/letsencrypt:ro

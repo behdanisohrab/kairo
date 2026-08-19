@@ -11,7 +11,7 @@
 host: dns.example.com
 
 # Where host SNI goes when we are NOT terminating TLS. Leave empty to have
-# Kairo terminate TLS itself using tls.cert/tls.key below.
+# Kairo terminate TLS itself with the ACME-managed certificate.
 host_backend: ""
 
 # Public IP of this box, handed out for restricted domains.
@@ -32,8 +32,21 @@ listen:
   http: "127.0.0.1:8080"   # loopback backend for reverse proxies
   metrics: "127.0.0.1:9090" # Prometheus endpoint (loopback-only, not exposed publicly)
 
-# Certificates for DoT and the SNI-terminated DoH/API endpoints. Required only
-# if host_backend is empty.
+# Automatic certificate management via Let's Encrypt (http-01 challenge) using
+# github.com/go-acme/lego. Set email to enable it: a certificate for `host` is
+# obtained automatically on first run and renewed before it expires. The
+# http-01 challenge must be reachable on port 80, so make sure :80 is open and
+# forwarded to this machine, and that `host` resolves to vps_ip.
+acme:
+  email: ""                       # your email for the ACME account
+  storage: ""                     # dir for account key + cert (default: <data_dir>/certs, persisted under /data in Docker)
+  directory: ""                   # ACME directory (empty = Let's Encrypt production)
+  renew_before_days: 30           # renew when the cert expires within this many days
+  http_listen: ":80"              # where the http-01 challenge is served
+
+# Static certificate, for hand-managed certs. Used only when acme.email is
+# empty; configuring both acme.email and tls is an error and the server refuses
+# to start.
 tls:
   cert: /etc/letsencrypt/live/dns.example.com/fullchain.pem
   key: /etc/letsencrypt/live/dns.example.com/privkey.pem

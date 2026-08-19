@@ -24,7 +24,9 @@ import (
 
 // Start runs the SNI router on cfg.Listen.HTTPS, serving the given HTTP handler
 // for our own hostname and tunnelling everything else to allowlisted clients.
-func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http.Handler) {
+// getCert supplies the certificate for the host SNI; it may be nil, in which
+// case TLS termination is skipped and host SNI must go to host_backend instead.
+func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http.Handler, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) {
 	ln, err := net.Listen("tcp", cfg.Listen.HTTPS)
 	if err != nil {
 		slog.Error("SNI router listen", "addr", cfg.Listen.HTTPS, "error", err)
@@ -33,19 +35,14 @@ func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http
 	slog.Info("starting SNI router", "addr", cfg.Listen.HTTPS)
 
 	var tlsConfig *tls.Config
-	if cfg.TLS.Cert != "" && cfg.TLS.Key != "" {
-		cer, err := tls.LoadX509KeyPair(cfg.TLS.Cert, cfg.TLS.Key)
-		if err != nil {
-			slog.Warn("SNI TLS termination disabled", "error", err)
-		} else {
-			tlsConfig = &tls.Config{
-				Certificates: []tls.Certificate{cer},
-				MinVersion:   tls.VersionTLS12,
-			}
+	if getCert != nil {
+		tlsConfig = &tls.Config{
+			GetCertificate: getCert,
+			MinVersion:     tls.VersionTLS12,
 		}
 	}
 	if tlsConfig == nil && cfg.HostBackend == "" {
-		slog.Warn("neither tls.cert/key nor host_backend is set; DoH/API will not be served", "addr", cfg.Listen.HTTPS)
+		slog.Warn("neither a certificate source nor host_backend is set; DoH/API will not be served", "addr", cfg.Listen.HTTPS)
 	}
 
 	for {

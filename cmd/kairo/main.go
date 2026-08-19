@@ -4,6 +4,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"kairo/internal/acme"
 	"kairo/internal/config"
 	"kairo/internal/logx"
 	"kairo/internal/metrics"
@@ -75,8 +79,13 @@ func (r *RunCmd) Run() error {
 	go st.Watch(ctx)
 	go st.RunGenerator(ctx)
 
+	getCert, renew, err := certSource(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
 	m := metrics.New(st.AllowedCount, st.RestrictedCount)
-	srv := server.New(cfg, st, version.Version, m)
+	srv := server.New(cfg, st, version.Version, m, getCert)
 	handler := srv.BuildHandler()
 
 	slog.Info("Kairo starting", "version", version.Version, "host", cfg.Host, "vps_ip", cfg.VPSIP)
@@ -86,13 +95,46 @@ func (r *RunCmd) Run() error {
 	go srv.StartDoT()
 	go srv.StartHTTP()
 	go srv.StartMetrics()
-	go sni.Start(cfg, st, m, handler)
+	go sni.Start(cfg, st, m, handler, getCert)
+	if renew != nil {
+		go renew(ctx)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	slog.Info("shutting down")
 	return nil
+}
+
+// certSource builds the TLS certificate source for DoT and the SNI router. When
+// ACME is configured it manages the certificate automatically via the http-01
+// challenge; otherwise it falls back to the static tls.cert/tls.key files. A
+// nil getCert means TLS termination is disabled. renew, when non-nil, runs the
+// ACME background renewal loop.
+func certSource(ctx context.Context, cfg *config.Config) (server.GetCertificate, func(context.Context), error) {
+	if cfg.ACME.Email != "" && cfg.Host != "" {
+		am, err := acme.New(cfg.Host, cfg.ACME)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := am.Ensure(ctx); err != nil {
+			slog.Error("acme: initial certificate obtain failed, will retry on demand", "domain", cfg.Host, "error", err)
+		}
+		return am.GetCertificate, am.Run, nil
+	}
+
+	if cfg.TLS.Cert != "" && cfg.TLS.Key != "" {
+		cer, err := tls.LoadX509KeyPair(cfg.TLS.Cert, cfg.TLS.Key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load tls certificate: %w", err)
+		}
+		cer.Leaf, _ = x509.ParseCertificate(cer.Certificate[0])
+		getCert := func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cer, nil }
+		return getCert, nil, nil
+	}
+
+	return nil, nil, nil
 }
 
 type GenIPsCmd struct {

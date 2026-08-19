@@ -29,6 +29,12 @@ listen:
   https: ":443"
   http: "127.0.0.1:8080"
   metrics: "127.0.0.1:9090"
+acme:
+  email: ""
+  storage: ""
+  directory: ""
+  renew_before_days: 30
+  http_listen: ":80"
 tls:
   cert: /etc/letsencrypt/live/dns.example.com/fullchain.pem
   key: /etc/letsencrypt/live/dns.example.com/privkey.pem
@@ -123,18 +129,42 @@ only re-emits the address it parsed from a PROXY header if the stream realip
 module rewrites `$remote_addr`, otherwise the header carries the hop's own
 loopback address and every client looks allowlisted.
 
+## ACME
+
+The `acme` section enables automatic certificate management through Let's
+Encrypt using the `http-01` challenge, driven by
+[github.com/go-acme/lego](https://github.com/go-acme/lego).
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `acme.email` | empty | Email used to register the ACME account. Empty disables ACME. |
+| `acme.storage` | `<data_dir>/certs` | Where the account key and certificate are kept (persisted under `/data` in Docker). |
+| `acme.directory` | Let's Encrypt production | ACME directory URL; set to a staging directory to test. |
+| `acme.renew_before_days` | `30` | Renew when the certificate expires within this many days. |
+| `acme.http_listen` | `:80` | Address the `http-01` challenge is served on. Must be publicly reachable on port 80. |
+
+When `acme.email` is set, Kairo registers an account, obtains a certificate for
+`host` on first run, and renews it automatically. Because the challenge is
+served on port 80, the VPS must accept connections on `:80`, and `host` must
+resolve to `vps_ip` from the public internet. The account key and certificate
+are stored under `acme.storage` so they survive restarts without re-issuing.
+
+ACME and the static `tls.cert`/`tls.key` fallback are mutually exclusive:
+configure one or the other, never both. If both are set, Kairo refuses to
+start with an explanatory error.
+
 ## TLS
 
 The `tls.cert` and `tls.key` values point at a certificate chain and its private
 key, normally issued for the `host` name. They are used for the DoT listener and
 for terminating TLS on the SNI router so that DoH and the API can be served
-directly over HTTPS.
+directly over HTTPS. They are only consulted when `acme.email` is empty.
 
-When the TLS section is empty, the SNI router does not terminate TLS. In that
-case `host_backend` names a local TLS endpoint, typically a reverse proxy on
-`127.0.0.1:8443`, and the router forwards all `host` traffic to it unchanged.
-This keeps DoH and the API reachable at the public hostname while the proxy
-handles the certificates.
+When neither ACME nor a TLS section is configured, the SNI router does not
+terminate TLS. In that case `host_backend` names a local TLS endpoint, typically
+a reverse proxy on `127.0.0.1:8443`, and the router forwards all `host` traffic
+to it unchanged. This keeps DoH and the API reachable at the public hostname
+while the proxy handles the certificates.
 
 ## TTL and rates
 

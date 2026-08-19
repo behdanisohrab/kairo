@@ -141,15 +141,22 @@ checks.
 
 ## TLS certificates
 
-DoT and the SNI-based DoH and API endpoints need a certificate for `host`:
+DoT and the SNI-based DoH and API endpoints need a certificate for `host`. Kairo
+can manage it automatically with [lego](https://github.com/go-acme/lego) using
+the `http-01` challenge. Set `acme.email` in the config and it will:
 
-```bash
-sudo apt install certbot
-sudo certbot certonly --standalone -d <host>
-```
+1. Register an ACME account with your email.
+2. Obtain a certificate for `host` on first run (the `http-01` challenge is
+   served on port 80, so make sure `:80` is open and forwarded to the VPS, and
+   that `host` resolves to `vps_ip`).
+3. Renew it automatically before it expires (`renew_before_days`, default 30).
 
-Point `tls.cert` at `fullchain.pem` and `tls.key` at `privkey.pem`, and use a
-deploy hook to restart the service when the certificate renews.
+The account key and certificate are stored under `<data_dir>/certs` (inside the
+`/data` volume in Docker), so they persist across restarts.
+
+If you prefer a hand-managed certificate, leave `acme.email` empty and point
+`tls.cert`/`tls.key` at the files instead, e.g. from certbot. Configuring both
+`acme.email` and `tls.cert`/`tls.key` is an error and Kairo refuses to start.
 
 ## Documentation
 
