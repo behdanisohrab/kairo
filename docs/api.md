@@ -110,8 +110,9 @@ addresses, the number of unresolved domains, and the new total.
 { "added": 4, "message": "allowlist regenerated", "ok": true, "total": 6, "unresolved": 0 }
 ```
 
-The same operation is available offline through the `-gen-ips` flag, and runs
-automatically in the background when `ip_source.interval` is greater than zero.
+The same operation is available offline through the `kairo gen-ips` subcommand,
+and runs automatically in the background when `ip_source.interval` is greater
+than zero.
 
 ## Status
 

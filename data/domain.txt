@@ -1,4 +1,6 @@
 # IP source for the allowlist generator. Each domain is resolved and every
 # resulting address is added to allowed.txt. Typical use: the public addresses
 # of trusted client machines or home routers.
-# Add your own entries and run: kairo -config config.json -gen-ips
+# Add your own entries and run: kairo gen-ips
+router.home
+nas.home

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"crypto/subtle"
@@ -10,8 +10,11 @@ import (
 )
 
 // handleAPI routes authenticated /api/* requests.
-func (s *State) handleAPI(w http.ResponseWriter, r *http.Request) {
-	if !apiLimiter.Allow() {
+func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.apiLimiter.Allow() {
+		if s.Metrics != nil {
+			s.Metrics.APIRateLimited.Inc()
+		}
 		writeJSON(w, http.StatusTooManyRequests, apiError("rate limit exceeded"))
 		return
 	}
@@ -37,7 +40,7 @@ func (s *State) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 // checkKey compares the supplied key in constant time, so nobody learns about
 // it from response timing. Query param, header, or Bearer token, take your pick.
-func (s *State) checkKey(r *http.Request) bool {
+func (s *Server) checkKey(r *http.Request) bool {
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		key = r.Header.Get("X-API-Key")
@@ -47,13 +50,13 @@ func (s *State) checkKey(r *http.Request) bool {
 			key = strings.TrimPrefix(auth, "Bearer ")
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(key), []byte(cfg.APIKey)) == 1
+	return subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1
 }
 
-func (s *State) handleAllow(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, apiData(s.AllowedList()))
+		writeJSON(w, http.StatusOK, apiData(s.st.AllowedList()))
 		return
 	}
 
@@ -74,7 +77,7 @@ func (s *State) handleAllow(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPost:
-		added, err := s.AddAllowed(ip)
+		added, err := s.st.AddAllowed(ip)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
 			return
@@ -85,7 +88,7 @@ func (s *State) handleAllow(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, apiMessage("IP allowlisted"))
 	case http.MethodDelete:
-		removed, err := s.RemoveAllowed(ip)
+		removed, err := s.st.RemoveAllowed(ip)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
 			return
@@ -100,10 +103,10 @@ func (s *State) handleAllow(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *State) handleRestricted(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRestricted(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, apiData(s.RestrictedList()))
+		writeJSON(w, http.StatusOK, apiData(s.st.RestrictedList()))
 		return
 	}
 
@@ -115,7 +118,7 @@ func (s *State) handleRestricted(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPost:
-		added, err := s.AddRestricted(domain)
+		added, err := s.st.AddRestricted(domain)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, apiError(err.Error()))
 			return
@@ -126,7 +129,7 @@ func (s *State) handleRestricted(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, apiMessage("domain restricted"))
 	case http.MethodDelete:
-		removed, err := s.RemoveRestricted(domain)
+		removed, err := s.st.RemoveRestricted(domain)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
 			return
@@ -143,12 +146,12 @@ func (s *State) handleRestricted(w http.ResponseWriter, r *http.Request) {
 
 // handleGenerate runs the ip-source resolution on demand. Same as -gen-ips,
 // minus the reboot.
-func (s *State) handleGenerate(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
 		return
 	}
-	added, failed, err := s.GenerateIPs()
+	added, failed, err := s.st.GenerateIPs()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
 		return
@@ -157,23 +160,23 @@ func (s *State) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		"ok":         true,
 		"added":      added,
 		"unresolved": failed,
-		"total":      s.AllowedCount(),
+		"total":      s.st.AllowedCount(),
 		"message":    "allowlist regenerated",
 	})
 }
 
-func (s *State) handleAPIStatus(w http.ResponseWriter) {
+func (s *Server) handleAPIStatus(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                 true,
-		"version":            version,
-		"host":               cfg.Host,
-		"vps_ip":             cfg.VPSIP,
-		"uptime_seconds":     int64(time.Since(startTime).Seconds()),
-		"allowlisted":        s.AllowedList(),
-		"restricted":         s.RestrictedList(),
-		"upstream_dns":       cfg.Upstream,
-		"ip_source":          s.IPSourcePath(),
-		"ip_source_interval": cfg.IPSource.Interval,
+		"version":            s.Version,
+		"host":               s.cfg.Host,
+		"vps_ip":             s.cfg.VPSIP,
+		"uptime_seconds":     int64(time.Since(s.start).Seconds()),
+		"allowlisted":        s.st.AllowedList(),
+		"restricted":         s.st.RestrictedList(),
+		"upstream_dns":       s.cfg.Upstream,
+		"ip_source":          s.st.IPSourcePath(),
+		"ip_source_interval": s.cfg.IPSource.Interval,
 	})
 }
 

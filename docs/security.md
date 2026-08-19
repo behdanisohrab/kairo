@@ -81,12 +81,14 @@ so a remote client cannot forge it.
 
 ## Network exposure
 
-The service binds four listeners. The DNS and DoT listeners and the SNI router
+The service binds five listeners. The DNS and DoT listeners and the SNI router
 must be reachable from the clients that use the service, so they are exposed to
-the network. The HTTP backend is loopback only. On a bare server, firewall the
-management API to known networks if you want defense in depth beyond the API
-key. In Docker, host networking means the container has the same exposure as the
-host, and the firewall rules on the host apply unchanged.
+the network. The HTTP backend and the Prometheus `/metrics` endpoint are
+loopback only, so they are not reachable from the network by default. On a bare
+server, firewall the management API to known networks if you want defense in
+depth beyond the API key. In Docker, host networking means the container has
+the same exposure as the host, and the firewall rules on the host apply
+unchanged.
 
 The DNS server answers restricted domains with the VPS IP only for allowlisted
 clients. Other clients get the normal upstream answer, so an unlisted device on

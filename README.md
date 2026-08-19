@@ -37,26 +37,26 @@ other domain resolves normally and never touches the VPS.
 
 ```bash
 mkdir -p configs
-docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest --generate config /configs
-# edit configs/config.json: host, vps_ip, api_key, tls paths
+docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest generate config /configs
+# edit configs/config.yaml: host, vps_ip, tls paths
 docker compose up -d
 ```
 
 Images are published to the GitHub Container Registry on every release
 (`ghcr.io/behdanisohrab/kairo:latest` and the tagged version).
 
-The `--generate` flag writes a complete starting config and the policy files
-into `configs/`. The compose file mounts that same `./configs` directory at
-`/data` in the container, where the image expects `config.json` to live, so no
-copying is needed. The bare binary uses the flag the same way via
-`kairo --generate config <dir>`. A step by step walkthrough lives in
-[docs/setup.md](docs/setup.md).
+The `generate config` command writes a complete starting config and the policy
+files into `configs/`, generating a fresh random `api_key` for you. The compose
+file mounts that same `./configs` directory at `/data` in the container, where
+the image expects `config.yaml` to live, so no copying is needed. The bare
+binary uses the same command via `kairo generate config <dir>`. A step by step
+walkthrough lives in [docs/setup.md](docs/setup.md).
 
-When you upgrade to a newer image, run `--migrate` once against your config to
-add any settings the new version introduced:
+When you upgrade to a newer image, run `migrate` once against your config to add
+any settings the new version introduced:
 
 ```bash
-docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest --migrate /configs/config.json
+docker run --rm -it -v "$PWD/configs:/configs" ghcr.io/behdanisohrab/kairo:latest migrate /configs/config.yaml
 ```
 
 It only adds what is missing, never touches your values, and is a no-op when the
@@ -68,9 +68,9 @@ which the allowlist depends on, and so they can bind the privileged ports.
 ## Manual build
 
 ```bash
-go build -ldflags="-X main.version=0.2.0" -o kairo .
-./kairo --generate config configs
-./kairo -config configs/config.json
+go build -ldflags="-X kairo/internal/version.Version=0.2.0" -o kairo ./cmd/kairo
+./kairo generate config configs
+./kairo run --config configs/config.yaml
 ```
 
 ### systemd
@@ -83,7 +83,7 @@ After=network-online.target
 [Service]
 User=root
 WorkingDirectory=/opt/kairo
-ExecStart=/opt/kairo/kairo -config /opt/kairo/config.json
+ExecStart=/opt/kairo/kairo run --config /opt/kairo/config.yaml
 Restart=always
 RestartSec=3
 
@@ -141,15 +141,22 @@ checks.
 
 ## TLS certificates
 
-DoT and the SNI-based DoH and API endpoints need a certificate for `host`:
+DoT and the SNI-based DoH and API endpoints need a certificate for `host`. Kairo
+can manage it automatically with [lego](https://github.com/go-acme/lego) using
+the `http-01` challenge. Set `acme.email` in the config and it will:
 
-```bash
-sudo apt install certbot
-sudo certbot certonly --standalone -d <host>
-```
+1. Register an ACME account with your email.
+2. Obtain a certificate for `host` on first run (the `http-01` challenge is
+   served on port 80, so make sure `:80` is open and forwarded to the VPS, and
+   that `host` resolves to `vps_ip`).
+3. Renew it automatically before it expires (`renew_before_days`, default 30).
 
-Point `tls.cert` at `fullchain.pem` and `tls.key` at `privkey.pem`, and use a
-deploy hook to restart the service when the certificate renews.
+The account key and certificate are stored under `<data_dir>/certs` (inside the
+`/data` volume in Docker), so they persist across restarts.
+
+If you prefer a hand-managed certificate, leave `acme.email` empty and point
+`tls.cert`/`tls.key` at the files instead, e.g. from certbot. Configuring both
+`acme.email` and `tls.cert`/`tls.key` is an error and Kairo refuses to start.
 
 ## Documentation
 

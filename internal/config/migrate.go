@@ -1,26 +1,29 @@
-package main
+package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"kairo/internal/fileutil"
 )
 
-// migrateConfig brings an existing config file up to the current schema by
+// Migrate brings an existing YAML config file up to the current schema by
 // adding any settings it is missing, with their defaults, and writing the file
 // back in place. User values are never overwritten and unknown keys are kept,
 // so a config from an older release survives an upgrade intact. Run it after
 // updating the binary; it is a no-op when the config is already current.
-func migrateConfig(path string) error {
+func Migrate(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 
 	existing := make(map[string]interface{})
-	if err := json.Unmarshal(b, &existing); err != nil {
+	if err := yaml.Unmarshal(b, &existing); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
@@ -39,21 +42,20 @@ func migrateConfig(path string) error {
 		mergeInto(existing, key, def)
 	}
 
-	out, err := json.MarshalIndent(existing, "", "  ")
+	out, err := yaml.Marshal(existing)
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
-	out = append(out, '\n')
 
 	var cfg Config
-	if err := json.Unmarshal(out, &cfg); err != nil {
+	if err := yaml.Unmarshal(out, &cfg); err != nil {
 		return fmt.Errorf("parse migrated config: %w", err)
 	}
-	if err := applyDefaultsAndValidate(&cfg); err != nil {
+	if err := NormalizeAndValidate(&cfg); err != nil {
 		return fmt.Errorf("migrated config is invalid: %w", err)
 	}
 
-	if err := atomicWrite(path, out); err != nil {
+	if err := fileutil.AtomicWrite(path, out); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -63,19 +65,19 @@ func migrateConfig(path string) error {
 	return nil
 }
 
-// migrationDefaults is the current schema expressed as JSON maps, minus the
-// identity settings (host, vps_ip, api_key) that are user data and never worth
-// stamping into a file that does not have them.
+// migrationDefaults is the current schema expressed as YAML maps, minus the
+// identity settings (host, host_backend, vps_ip, api_key) that are user data
+// and never worth stamping into a file that does not have them.
 func migrationDefaults() (map[string]interface{}, error) {
-	b, err := json.Marshal(DefaultConfig())
+	b, err := yaml.Marshal(DefaultConfig())
 	if err != nil {
 		return nil, fmt.Errorf("encode defaults: %w", err)
 	}
 	m := make(map[string]interface{})
-	if err := json.Unmarshal(b, &m); err != nil {
+	if err := yaml.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("parse defaults: %w", err)
 	}
-	for _, k := range []string{"host", "host_backend", "vps_ip", "api_key"} {
+	for _, k := range []string{"host", "host_backend", "vps_ip", "api_key", "policy", "ip_source"} {
 		delete(m, k)
 	}
 	return m, nil
