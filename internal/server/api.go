@@ -15,18 +15,17 @@ import (
 // handleAPI routes authenticated /api/* requests. Supports both the legacy
 // single API key and per-user API keys from the database.
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
-	if !s.apiLimiter.Allow() {
-		if s.Metrics != nil {
-			s.Metrics.APIRateLimited.Inc()
-		}
-		writeJSON(w, http.StatusTooManyRequests, apiError("rate limit exceeded"))
-		return
-	}
-
 	path := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
 
-	// Auth routes don't require authentication
+	// Auth routes don't require authentication - use global limiter for login brute force
 	if path == "auth/login" {
+		if !s.apiLimiter.Allow() {
+			if s.Metrics != nil {
+				s.Metrics.APIRateLimited.Inc()
+			}
+			writeJSON(w, http.StatusTooManyRequests, apiError("rate limit exceeded"))
+			return
+		}
 		s.handleLogin(w, r)
 		return
 	}
@@ -35,6 +34,14 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	user := s.authenticateRequest(r)
 	if user == nil {
 		writeJSON(w, http.StatusUnauthorized, apiError("invalid or missing authentication"))
+		return
+	}
+	// Per-user rate limiting; 0 means unlimited
+	if !s.allowAPI(user) {
+		if s.Metrics != nil {
+			s.Metrics.APIRateLimited.Inc()
+		}
+		writeJSON(w, http.StatusTooManyRequests, apiError("rate limit exceeded"))
 		return
 	}
 
@@ -60,6 +67,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleMyDevices(w, r)
 	case path == "me/api-key/regenerate":
 		s.handleMyRegenerateAPIKey(w, r)
+	case path == "me/traffic":
+		s.handleMyTraffic(w, r)
+	case path == "traffic" && r.Method == http.MethodGet:
+		s.requireAdmin(s.handleTraffic)(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/rate-limit"):
+		s.requireAdmin(s.handleUpdateUserRateLimit)(w, r)
 	case path == "public-config":
 		s.handlePublicConfig(w, r)
 	case path == "domain/check":
@@ -73,7 +86,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "domain/requests/") && strings.HasSuffix(path, "/reject"):
 		s.requireAdmin(s.handleRejectDomainRequest)(w, r)
 	case path == "allow":
-		s.requireAdmin(s.handleAllow)(w, r)
+		s.handleAllow(w, r)
 	case path == "restricted":
 		s.requireAdmin(s.handleRestricted)(w, r)
 	case path == "generate":
@@ -87,11 +100,13 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 // authenticateRequest checks for session cookie first, then falls back to API key.
 func (s *Server) authenticateRequest(r *http.Request) *database.User {
-	// Try session cookie first
-	if cookie, err := r.Cookie("kairo_session"); err == nil {
-		if session, _ := s.db.GetSession(cookie.Value); session != nil {
-			if user, _ := s.db.GetUserByID(session.UserID); user != nil {
-				return user
+	// Try session cookie first (requires DB)
+	if s.db != nil {
+		if cookie, err := r.Cookie("kairo_session"); err == nil {
+			if session, _ := s.db.GetSession(cookie.Value); session != nil {
+				if user, _ := s.db.GetUserByID(session.UserID); user != nil {
+					return user
+				}
 			}
 		}
 	}
@@ -111,8 +126,8 @@ func (s *Server) authenticateRequest(r *http.Request) *database.User {
 		return nil
 	}
 
-	// Check legacy single API key - treat as admin
-	if subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1 {
+	// Check legacy single API key - treat as admin (requires cfg)
+	if s.cfg != nil && subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1 {
 		return &database.User{
 			ID:       0,
 			Username: "admin",
@@ -121,17 +136,28 @@ func (s *Server) authenticateRequest(r *http.Request) *database.User {
 		}
 	}
 
-	// Check per-user API keys
-	if user, _ := s.db.GetUserByAPIKey(key); user != nil {
-		return user
+	// Check per-user API keys (requires DB)
+	if s.db != nil {
+		if user, _ := s.db.GetUserByAPIKey(key); user != nil {
+			return user
+		}
 	}
 
 	return nil
 }
 
 func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
+		return
+	}
+	// GET is admin-only (global allowlist is sensitive)
+	if r.Method == http.MethodGet {
+		if user.Role != "admin" {
+			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
+			return
+		}
 		writeJSON(w, http.StatusOK, apiData(s.st.AllowedList()))
 		return
 	}
@@ -151,6 +177,20 @@ func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Non-admin can only allowlist their own current IP
+	if user.Role != "admin" {
+		clientIP := s.clientIP(r)
+		if clientIP == nil || ip.String() != clientIP.String() {
+			writeJSON(w, http.StatusForbidden, apiError("you can only allowlist your own current IP; ask admin for other IPs"))
+			return
+		}
+		// For DELETE, non-admin is not allowed at all (global list)
+		if r.Method == http.MethodDelete {
+			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
+			return
+		}
+	}
+
 	switch r.Method {
 	case http.MethodPost:
 		added, err := s.st.AddAllowed(ip)
@@ -164,6 +204,11 @@ func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, apiMessage("IP allowlisted"))
 	case http.MethodDelete:
+		// Double-check admin for DELETE (already handled above for non-admin)
+		if user.Role != "admin" {
+			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
+			return
+		}
 		removed, err := s.st.RemoveAllowed(ip)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
@@ -301,7 +346,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username  string `json:"username"`
 		Password  string `json:"password"`
-		RateLimit int    `json:"rate_limit"`
+		RateLimit *int   `json:"rate_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError("invalid request body"))
@@ -316,22 +361,26 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError("password must be 6-128 characters"))
 		return
 	}
-	// allow only alphanumeric and . _ -
 	for _, ch := range req.Username {
 		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-') {
 			writeJSON(w, http.StatusBadRequest, apiError("username contains invalid characters"))
 			return
 		}
 	}
-	if req.RateLimit <= 0 {
-		req.RateLimit = 100
+	rateLimit := 100
+	if req.RateLimit != nil {
+		rateLimit = *req.RateLimit
+		if rateLimit < 0 {
+			writeJSON(w, http.StatusBadRequest, apiError("rate_limit cannot be negative"))
+			return
+		}
+		if rateLimit > 10000 {
+			writeJSON(w, http.StatusBadRequest, apiError("rate_limit too large (max 10000, 0 for unlimited)"))
+			return
+		}
+		// 0 means unlimited
 	}
-	if req.RateLimit > 10000 {
-		writeJSON(w, http.StatusBadRequest, apiError("rate_limit too large"))
-		return
-	}
-
-	user, err := s.db.CreateUser(req.Username, req.Password, "user")
+	user, err := s.db.CreateUserWithRateLimit(req.Username, req.Password, "user", rateLimit)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, apiError(err.Error()))
 		return
@@ -490,6 +539,108 @@ func (s *Server) handleMyRegenerateAPIKey(w http.ResponseWriter, r *http.Request
 		"ok":      true,
 		"api_key": newKey,
 	})
+}
+
+func (s *Server) handleMyTraffic(w http.ResponseWriter, r *http.Request) {
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
+		return
+	}
+	devices, _ := s.db.GetDevicesByUser(user.ID)
+	logs, _ := s.db.GetConnectionLogsByUser(user.ID)
+	// Count by device and recent
+	recent := logs
+	if len(recent) > 20 {
+		recent = recent[:20]
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":              true,
+		"user_id":         user.ID,
+		"devices":         len(devices),
+		"total_requests":  len(logs),
+		"recent":          recent,
+		"rate_limit":      user.RateLimit,
+		"unlimited":       user.RateLimit == 0,
+	})
+}
+
+func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	users, _ := s.db.ListUsers()
+	devices, _ := s.db.GetAllDevices()
+	var totalLogs int
+	_ = s.db.CountConnectionLogs(&totalLogs)
+	logs, _ := s.db.GetRecentConnectionLogs(20)
+	// per-user breakdown
+	type userTraffic struct {
+		Username string `json:"username"`
+		Devices  int    `json:"devices"`
+		Requests int    `json:"requests"`
+	}
+	var breakdown []userTraffic
+	for _, u := range users {
+		devs, _ := s.db.GetDevicesByUser(u.ID)
+		cls, _ := s.db.GetConnectionLogsByUser(u.ID)
+		breakdown = append(breakdown, userTraffic{Username: u.Username, Devices: len(devs), Requests: len(cls)})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":               true,
+		"total_users":      len(users),
+		"total_devices":    len(devices),
+		"total_requests":   totalLogs,
+		"allowlisted":      s.st.AllowedCount(),
+		"restricted":       s.st.RestrictedCount(),
+		"uptime_seconds":   int64(time.Since(s.start).Seconds()),
+		"version":          s.Version,
+		"recent":           logs,
+		"per_user":         breakdown,
+	})
+}
+
+func (s *Server) handleUpdateUserRateLimit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+	// path: /api/users/:id/rate-limit
+	prefix := "/api/users/"
+	suffix := "/rate-limit"
+	idStr := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, suffix), prefix)
+	idStr = strings.TrimSuffix(idStr, "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		RateLimit *int `json:"rate_limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RateLimit == nil {
+		writeJSON(w, http.StatusBadRequest, apiError("rate_limit is required"))
+		return
+	}
+	rl := *req.RateLimit
+	if rl < 0 || rl > 10000 {
+		writeJSON(w, http.StatusBadRequest, apiError("rate_limit must be 0 (unlimited) to 10000"))
+		return
+	}
+	target, err := s.db.GetUserByID(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, apiError("user not found"))
+		return
+	}
+	if err := s.db.UpdateUserRateLimit(id, rl); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	// clear cached limiter so new limit takes effect
+	s.userLimiters.Delete(id)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "rate_limit": rl, "unlimited": rl == 0})
 }
 
 func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {

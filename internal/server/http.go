@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"embed"
 	"html/template"
 	"io"
@@ -60,6 +61,10 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			next.ServeHTTP(w, r)
@@ -243,7 +248,53 @@ func (s *Server) clientIP(r *http.Request) net.IP {
 // Health + status
 // ---------------------------------------------------------------------------
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// Detailed JSON if requested via ?detailed=1 or Accept: application/json
+	if r.URL.Query().Get("detailed") == "1" || r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
+		dbOk := true
+		dbErr := ""
+		if s.db != nil {
+			var dummy int
+			if err := s.db.CountConnectionLogs(&dummy); err != nil {
+				dbOk = false
+				dbErr = err.Error()
+			}
+		}
+		host := ""
+		vpsIP := ""
+		adminURL := ""
+		dohURL := ""
+		if s.cfg != nil {
+			host = s.cfg.Host
+			vpsIP = s.cfg.VPSIP
+			adminURL = s.cfg.EffectiveAdminURL()
+			dohURL = s.cfg.EffectiveDoHURL()
+		}
+		allowlisted := 0
+		restricted := 0
+		if s.st != nil {
+			allowlisted = s.st.AllowedCount()
+			restricted = s.st.RestrictedCount()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":       dbOk,
+			"status":   map[string]string{"overall": map[bool]string{true: "ok", false: "degraded"}[dbOk]},
+			"version":  s.Version,
+			"uptime":   time.Since(s.start).String(),
+			"uptime_seconds": int64(time.Since(s.start).Seconds()),
+			"host":     host,
+			"vps_ip":   vpsIP,
+			"admin_url": adminURL,
+			"doh_url":  dohURL,
+			"checks": map[string]interface{}{
+				"database": map[string]interface{}{"ok": dbOk, "error": dbErr},
+				"allowlisted": allowlisted,
+				"restricted": restricted,
+			},
+		})
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("ok\n"))
 }
@@ -252,6 +303,8 @@ type statusData struct {
 	Version          string
 	Host             string
 	VPSIP            string
+	AdminURL         string
+	DoHURL           string
 	Uptime           string
 	AllowedCount     int
 	RestrictedCount  int
@@ -266,16 +319,27 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Support ?format=json for API-like health
+	if r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
+		s.handleHealth(w, r)
+		return
+	}
+
 	data := statusData{
 		Version:          s.Version,
 		Host:             s.cfg.Host,
 		VPSIP:            s.cfg.VPSIP,
+		AdminURL:         s.cfg.EffectiveAdminURL(),
+		DoHURL:           s.cfg.EffectiveDoHURL(),
 		Uptime:           time.Since(s.start).Round(time.Second).String(),
 		AllowedCount:     s.st.AllowedCount(),
 		RestrictedCount:  s.st.RestrictedCount(),
-		DoHEndpoint:      "https://" + s.cfg.Host + "/dns-query",
+		DoHEndpoint:      s.cfg.EffectiveDoHURL(),
 		PlainDNSEndpoint: s.cfg.VPSIP + ":" + portOf(s.cfg.Listen.DNS),
 		DoTEndpoint:      "tls://" + s.cfg.Host + ":" + portOf(s.cfg.Listen.DoT),
+	}
+	if data.DoHEndpoint == "" {
+		data.DoHEndpoint = "https://" + s.cfg.Host + "/dns-query"
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

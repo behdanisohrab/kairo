@@ -15,6 +15,8 @@ const Users = lazy(() => import('./pages/admin/Users'))
 const UserDevices = lazy(() => import('./pages/admin/UserDevices'))
 const AllDevices = lazy(() => import('./pages/admin/AllDevices'))
 const Domains = lazy(() => import('./pages/admin/Domains'))
+const Traffic = lazy(() => import('./pages/Traffic'))
+const Health = lazy(() => import('./pages/Health'))
 const UserDashboard = lazy(() => import('./pages/user/Dashboard'))
 const Guide = lazy(() => import('./pages/Guide'))
 
@@ -143,6 +145,8 @@ function AppRoutes() {
               <Route path="/admin/users/:id/devices" element={<Guard admin><Layout><UserDevices /></Layout></Guard>} />
               <Route path="/admin/devices" element={<Guard admin><Layout><AllDevices /></Layout></Guard>} />
               <Route path="/admin/domains" element={<Guard admin><Layout><Domains /></Layout></Guard>} />
+              <Route path="/traffic" element={<Guard><Layout><Traffic /></Layout></Guard>} />
+              <Route path="/health" element={<Guard><Layout><Health /></Layout></Guard>} />
               <Route path="/dashboard" element={<Guard><Layout><UserDashboard /></Layout></Guard>} />
               <Route path="/guide" element={<Guard><Layout><Guide /></Layout></Guard>} />
               <Route

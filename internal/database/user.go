@@ -73,6 +73,10 @@ func (db *DB) GetUserByAPIKey(apiKey string) (*User, error) {
 }
 
 func (db *DB) CreateUser(username, password, role string) (*User, error) {
+	return db.CreateUserWithRateLimit(username, password, role, 100)
+}
+
+func (db *DB) CreateUserWithRateLimit(username, password, role string, rateLimit int) (*User, error) {
 	hash, err := HashPassword(password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
@@ -86,10 +90,17 @@ func (db *DB) CreateUser(username, password, role string) (*User, error) {
 	if role == "" {
 		role = "user"
 	}
+	// rateLimit 0 means unlimited
+	if rateLimit < 0 {
+		rateLimit = 0
+	}
+	if rateLimit > 10000 {
+		rateLimit = 10000
+	}
 
 	result, err := db.conn.Exec(
-		`INSERT INTO users (username, password_hash, api_key, role) VALUES (?, ?, ?, ?)`,
-		username, hash, apiKey, role,
+		`INSERT INTO users (username, password_hash, api_key, role, rate_limit) VALUES (?, ?, ?, ?, ?)`,
+		username, hash, apiKey, role, rateLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
@@ -97,6 +108,17 @@ func (db *DB) CreateUser(username, password, role string) (*User, error) {
 
 	id, _ := result.LastInsertId()
 	return db.GetUserByID(int(id))
+}
+
+func (db *DB) UpdateUserRateLimit(userID, rateLimit int) error {
+	if rateLimit < 0 {
+		rateLimit = 0
+	}
+	if rateLimit > 10000 {
+		rateLimit = 10000
+	}
+	_, err := db.conn.Exec(`UPDATE users SET rate_limit = ? WHERE id = ?`, rateLimit, userID)
+	return err
 }
 
 func (db *DB) UpdateUserAPIKey(userID int) (string, error) {

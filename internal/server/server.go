@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,15 +28,16 @@ type GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 // Server carries everything a request needs to be answered: the config, the
 // policy state, the version string, the rate limiters and the metrics.
 type Server struct {
-	cfg        *config.Config
-	st         *state.State
-	db         *database.DB
-	Version    string
-	Metrics    *metrics.Metrics
-	getCert    GetCertificate
-	start      time.Time
-	dnsLimiter *rate.Limiter
-	apiLimiter *rate.Limiter
+	cfg          *config.Config
+	st           *state.State
+	db           *database.DB
+	Version      string
+	Metrics      *metrics.Metrics
+	getCert      GetCertificate
+	start        time.Time
+	dnsLimiter   *rate.Limiter
+	apiLimiter   *rate.Limiter
+	userLimiters sync.Map // map[int]*rate.Limiter per user ID, 0 = legacy admin (unlimited)
 }
 
 // New wires up a Server from a loaded config, policy state, metric registry and
@@ -51,6 +53,28 @@ func New(cfg *config.Config, st *state.State, version string, m *metrics.Metrics
 		dnsLimiter: rate.NewLimiter(rate.Limit(cfg.Rate.DNS), cfg.Rate.DNSBurst),
 		apiLimiter: rate.NewLimiter(rate.Limit(cfg.Rate.API), cfg.Rate.APIBurst),
 	}
+}
+
+// allowAPI checks per-user rate limit. 0 means unlimited.
+func (s *Server) allowAPI(user *database.User) bool {
+	if user == nil {
+		return s.apiLimiter.Allow()
+	}
+	if user.RateLimit == 0 {
+		return true // unlimited
+	}
+	// legacy admin (ID 0) is unlimited as well
+	if user.ID == 0 && user.Role == "admin" {
+		return true
+	}
+	val, _ := s.userLimiters.LoadOrStore(user.ID, rate.NewLimiter(rate.Limit(user.RateLimit), user.RateLimit*2))
+	limiter := val.(*rate.Limiter)
+	// If admin changed rate_limit, recreate limiter if limit changed
+	if limiter.Limit() != rate.Limit(user.RateLimit) {
+		limiter = rate.NewLimiter(rate.Limit(user.RateLimit), user.RateLimit*2)
+		s.userLimiters.Store(user.ID, limiter)
+	}
+	return limiter.Allow()
 }
 
 // StartDNS runs the plain DNS servers (UDP and TCP on the same port).

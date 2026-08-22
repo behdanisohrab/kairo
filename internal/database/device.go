@@ -193,6 +193,32 @@ func (db *DB) FindUserByIP(ip string) (*User, error) {
 	return &u, nil
 }
 
+func (db *DB) CountConnectionLogs(out *int) error {
+	return db.conn.QueryRow(`SELECT COUNT(*) FROM connection_logs`).Scan(out)
+}
+
+func (db *DB) GetRecentConnectionLogs(limit int) ([]ConnectionLog, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.conn.Query(
+		`SELECT id, device_id, user_id, domain, created_at FROM connection_logs ORDER BY created_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get recent logs: %w", err)
+	}
+	defer rows.Close()
+	var logs []ConnectionLog
+	for rows.Next() {
+		var l ConnectionLog
+		if err := rows.Scan(&l.ID, &l.DeviceID, &l.UserID, &l.Domain, &l.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan log: %w", err)
+		}
+		logs = append(logs, l)
+	}
+	return logs, rows.Err()
+}
+
 func scanDevices(rows *sql.Rows) ([]Device, error) {
 	var devices []Device
 	for rows.Next() {

@@ -5,7 +5,7 @@ import type { UserData } from '../../api'
 import { useToast } from '../../components/ui/Toast'
 import { ConfirmModal, Modal } from '../../components/ui/Modal'
 import { useI18n } from '../../lib/i18n'
-import { FiSearch, FiPlus, FiTrash2, FiKey, FiSmartphone, FiCopy, FiCheck, FiX, FiUserPlus } from 'react-icons/fi'
+import { FiSearch, FiPlus, FiTrash2, FiKey, FiSmartphone, FiCopy, FiCheck, FiX, FiUserPlus, FiZap, FiEdit3 } from 'react-icons/fi'
 
 function validateUsername(v: string) {
   if (v.length < 3) return 'At least 3 characters'
@@ -25,12 +25,14 @@ export default function Users() {
   const [formUser, setFormUser] = useState('')
   const [formPass, setFormPass] = useState('')
   const [formRate, setFormRate] = useState('100')
+  const [unlimited, setUnlimited] = useState(false)
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<UserData | null>(null)
   const [regenTarget, setRegenTarget] = useState<UserData | null>(null)
   const [regenLoading, setRegenLoading] = useState(false)
   const [lastKey, setLastKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [editRate, setEditRate] = useState<{ id: number; rate: string; unlimited: boolean } | null>(null)
   const { success, error } = useToast()
   const { t } = useI18n()
 
@@ -55,12 +57,12 @@ export default function Users() {
     const pErr = validatePassword(formPass)
     if (uErr || pErr) { error(uErr || pErr || 'Fix form errors'); return }
     setCreating(true)
-    const rate = parseInt(formRate) || 100
+    const rate = unlimited ? 0 : (parseInt(formRate) || 100)
     const r = await api.createUser(formUser.trim(), formPass, rate)
     if (r.ok && r.user) {
-      success(`User "${r.user.username}" created`)
+      success(`User "${r.user.username}" created${rate===0?' (unlimited)':''}`)
       setLastKey(r.user.api_key)
-      setFormUser(''); setFormPass(''); setShowCreate(false); load()
+      setFormUser(''); setFormPass(''); setShowCreate(false); setUnlimited(false); setFormRate('100'); load()
     } else error(r.error || 'Failed to create user')
     setCreating(false)
   }
@@ -82,6 +84,14 @@ export default function Users() {
   const copyKey = async (key: string) => {
     await navigator.clipboard.writeText(key)
     setCopied(true); setTimeout(() => setCopied(false), 1200)
+  }
+  const saveRate = async (id: number) => {
+    if (!editRate) return
+    const rate = editRate.unlimited ? 0 : (parseInt(editRate.rate) || 0)
+    if (!editRate.unlimited && (rate < 1 || rate > 10000)) { error('Rate must be 1-10000 or unlimited'); return }
+    const r = await api.updateUserRateLimit(id, rate)
+    if (r.ok) { success(rate===0?'Unlimited enabled':`Rate set to ${rate}`); setEditRate(null); load() }
+    else error(r.error || 'Failed')
   }
 
   if (loading) {
@@ -107,7 +117,7 @@ export default function Users() {
       </div>
 
       {lastKey && (
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl border bg-[var(--color-emerald-soft)] px-4 py-3 text-sm" style={{ borderColor: '#bbf7d0' }}>
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-[var(--color-emerald-soft)] px-4 py-3 text-sm" style={{ borderColor: '#bbf7d0' }}>
           <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--color-emerald)]"><FiKey size={14} /> {t('users.apiKey')}</span>
           <code className="inline flex-1 break-all text-xs">{lastKey}</code>
           <button onClick={() => copyKey(lastKey)} className="btn btn-outline btn-sm shrink-0 inline-flex items-center gap-1">
@@ -121,7 +131,7 @@ export default function Users() {
         <form onSubmit={create} className="card p-5 animate-in" noValidate>
           <h3 className="text-sm font-semibold flex items-center gap-1.5"><FiUserPlus size={14} /> {t('users.createTitle')}</h3>
           <p className="mt-1 text-xs text-[var(--color-ink-3)]">{t('users.createDesc')}</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-[1.2fr_1.2fr_0.6fr_auto] sm:items-end">
+          <div className="mt-4 grid gap-3 sm:grid-cols-[1.2fr_1.2fr_0.7fr_auto] sm:items-end">
             <div>
               <label htmlFor="new-username" className="label">{t('users.username')}</label>
               <input id="new-username" value={formUser} onChange={(e) => setFormUser(e.target.value)} placeholder="e.g. sohrab" className="input" required />
@@ -133,8 +143,15 @@ export default function Users() {
               {formPass && validatePassword(formPass) && <p className="help text-[var(--color-rose)]">{validatePassword(formPass)}</p>}
             </div>
             <div>
-              <label htmlFor="new-rate" className="label">{t('users.rateLimit')}</label>
-              <input id="new-rate" type="number" min={1} value={formRate} onChange={(e) => setFormRate(e.target.value)} className="input" />
+              <label className="label">{t('users.rateLimit')}</label>
+              <div className="flex items-center gap-2">
+                <input type="number" min={1} max={10000} value={formRate} onChange={(e) => setFormRate(e.target.value)} className="input" disabled={unlimited} placeholder="100" />
+                <label className="inline-flex items-center gap-1 text-xs whitespace-nowrap">
+                  <input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} className="rounded" />
+                  <FiZap size={12} /> Unlimited
+                </label>
+              </div>
+              <p className="help">{unlimited ? 'No rate limit' : 'Requests per second (0 = unlimited)'}</p>
             </div>
             <button type="submit" disabled={creating} className="btn btn-primary h-[42px] shrink-0">{creating ? t('users.creating') : t('users.createBtn')}</button>
           </div>
@@ -152,7 +169,7 @@ export default function Users() {
 
         {filtered.length === 0 ? (
           <div className="p-10 text-center">
-            <div className="mx-auto grid h-10 w-10 place-items-center rounded-2xl border bg-[var(--color-raised)]"><FiSearch size={18} /></div>
+            <div className="mx-auto grid h-10 w-10 place-items-center rounded-xl border bg-[var(--color-raised)]"><FiSearch size={18} /></div>
             <p className="mt-3 text-sm font-medium">{t('users.noMatchTitle')}</p>
             <p className="mt-1 text-xs text-[var(--color-ink-3)]">{t('users.noMatchDesc')}</p>
           </div>
@@ -163,8 +180,8 @@ export default function Users() {
                 <tr>
                   <th>User</th>
                   <th>Role</th>
+                  <th>Limit</th>
                   <th className="hidden md:table-cell">Created</th>
-                  <th className="hidden lg:table-cell">Last login</th>
                   <th className="w-[1%] whitespace-nowrap">Actions</th>
                 </tr>
               </thead>
@@ -183,8 +200,22 @@ export default function Users() {
                         {u.role}
                       </span>
                     </td>
+                    <td>
+                      {editRate?.id === u.id ? (
+                        <div className="flex items-center gap-1">
+                          <input type="number" value={editRate.rate} onChange={(e) => setEditRate({ ...editRate, rate: e.target.value })} disabled={editRate.unlimited} className="input h-7 w-20 py-1 text-xs" />
+                          <label className="inline-flex items-center gap-1 text-xs"><input type="checkbox" checked={editRate.unlimited} onChange={(e) => setEditRate({ ...editRate, unlimited: e.target.checked })} /> <FiZap size={10} /></label>
+                          <button onClick={() => saveRate(u.id)} className="btn btn-primary btn-sm h-7 px-2"><FiCheck size={10} /></button>
+                          <button onClick={() => setEditRate(null)} className="btn btn-ghost btn-sm h-7 px-2"><FiX size={10} /></button>
+                        </div>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs">
+                          {u.rate_limit === 0 ? <span className="badge" style={{ background: 'var(--color-violet-soft)', color: 'var(--color-violet)', borderColor: '#e9d5ff' }}><FiZap size={10} /> Unlimited</span> : `${u.rate_limit}/s`}
+                          <button onClick={() => setEditRate({ id: u.id, rate: String(u.rate_limit), unlimited: u.rate_limit === 0 })} className="btn btn-ghost btn-sm h-6 w-6 p-0"><FiEdit3 size={10} /></button>
+                        </span>
+                      )}
+                    </td>
                     <td className="hidden md:table-cell text-xs text-[var(--color-ink-3)]">{new Date(u.created_at).toLocaleDateString()}</td>
-                    <td className="hidden lg:table-cell text-xs text-[var(--color-ink-3)]">{u.last_login ? new Date(u.last_login).toLocaleString() : '-'}</td>
                     <td>
                       <div className="flex flex-wrap gap-1.5 justify-end">
                         <Link to={`/admin/users/${u.id}/devices`} className="btn btn-outline btn-sm no-underline inline-flex items-center gap-1"><FiSmartphone size={12} /> Devices</Link>

@@ -179,6 +179,17 @@ export const api = {
   approveDomainRequest: (id: number) => safeRequest<APIResponse>(`/domain/requests/${id}/approve`, { method: 'POST' }),
   rejectDomainRequest: (id: number) => safeRequest<APIResponse>(`/domain/requests/${id}/reject`, { method: 'POST' }),
   publicConfig: () => safeRequest<{ ok: boolean; admin_url?: string; doh_url?: string; host?: string; vps_ip?: string; error?: string }>('/public-config'),
+  traffic: () => safeRequest<{ ok: boolean; total_users?: number; total_devices?: number; total_requests?: number; allowlisted?: number; restricted?: number; uptime_seconds?: number; version?: string; recent?: any[]; per_user?: any[]; error?: string }>('/traffic'),
+  myTraffic: () => safeRequest<{ ok: boolean; devices?: number; total_requests?: number; recent?: any[]; rate_limit?: number; unlimited?: boolean; error?: string }>('/me/traffic'),
+  updateUserRateLimit: (id: number, rate_limit: number) => safeRequest<APIResponse>(`/users/${id}/rate-limit`, { method: 'POST', body: JSON.stringify({ rate_limit }) }),
+  health: async () => {
+    try {
+      const res = await fetch('/healthz?detailed=1', { credentials: 'include', headers: { Accept: 'application/json' } })
+      return await res.json()
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'failed' }
+    }
+  },
   status: () =>
     safeRequest<
       APIResponse & {
