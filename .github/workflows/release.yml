@@ -62,5 +62,3 @@ jobs:
           file: ./Dockerfile
           push: false
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
