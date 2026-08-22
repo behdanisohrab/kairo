@@ -72,7 +72,7 @@ export default function Login() {
           <Link to="/" className="inline-flex items-center gap-2.5 no-underline">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-[#141210] font-mono text-xs font-bold">k.</span>
             <span className="mono text-sm font-semibold tracking-[-0.02em]">kairo</span>
-            <span className="rounded-md border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] tracking-wide">v0.2</span>
+            <span className="rounded-md border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] tracking-wide">v0.3.1</span>
           </Link>
 
           <div className="mt-auto">
