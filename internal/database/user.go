@@ -30,9 +30,9 @@ func CheckPassword(hash, password string) bool {
 func (db *DB) GetUserByUsername(username string) (*User, error) {
 	u := &User{}
 	err := db.conn.QueryRow(
-		`SELECT id, username, password_hash, api_key, role, rate_limit, created_at, last_login
+		`SELECT id, username, password_hash, api_key, role, rate_limit, ip_limit, created_at, last_login
 		 FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.CreatedAt, &u.LastLogin)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.IpLimit, &u.CreatedAt, &u.LastLogin)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -45,9 +45,9 @@ func (db *DB) GetUserByUsername(username string) (*User, error) {
 func (db *DB) GetUserByID(id int) (*User, error) {
 	u := &User{}
 	err := db.conn.QueryRow(
-		`SELECT id, username, password_hash, api_key, role, rate_limit, created_at, last_login
+		`SELECT id, username, password_hash, api_key, role, rate_limit, ip_limit, created_at, last_login
 		 FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.CreatedAt, &u.LastLogin)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.IpLimit, &u.CreatedAt, &u.LastLogin)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -60,9 +60,9 @@ func (db *DB) GetUserByID(id int) (*User, error) {
 func (db *DB) GetUserByAPIKey(apiKey string) (*User, error) {
 	u := &User{}
 	err := db.conn.QueryRow(
-		`SELECT id, username, password_hash, api_key, role, rate_limit, created_at, last_login
+		`SELECT id, username, password_hash, api_key, role, rate_limit, ip_limit, created_at, last_login
 		 FROM users WHERE api_key = ?`, apiKey,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.CreatedAt, &u.LastLogin)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.IpLimit, &u.CreatedAt, &u.LastLogin)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -77,6 +77,10 @@ func (db *DB) CreateUser(username, password, role string) (*User, error) {
 }
 
 func (db *DB) CreateUserWithRateLimit(username, password, role string, rateLimit int) (*User, error) {
+	return db.CreateUserWithRateLimitAndIpLimit(username, password, role, rateLimit, 3)
+}
+
+func (db *DB) CreateUserWithRateLimitAndIpLimit(username, password, role string, rateLimit, ipLimit int) (*User, error) {
 	hash, err := HashPassword(password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
@@ -90,17 +94,25 @@ func (db *DB) CreateUserWithRateLimit(username, password, role string, rateLimit
 	if role == "" {
 		role = "user"
 	}
-	// rateLimit 0 means unlimited
 	if rateLimit < 0 {
 		rateLimit = 0
 	}
 	if rateLimit > 10000 {
 		rateLimit = 10000
 	}
+	if ipLimit < 0 {
+		ipLimit = 0
+	}
+	if ipLimit > 100 {
+		ipLimit = 100
+	}
+	if ipLimit == 0 && rateLimit == 0 {
+		// allow 0 for both unlimited, keep as 0
+	}
 
 	result, err := db.conn.Exec(
-		`INSERT INTO users (username, password_hash, api_key, role, rate_limit) VALUES (?, ?, ?, ?, ?)`,
-		username, hash, apiKey, role, rateLimit,
+		`INSERT INTO users (username, password_hash, api_key, role, rate_limit, ip_limit) VALUES (?, ?, ?, ?, ?, ?)`,
+		username, hash, apiKey, role, rateLimit, ipLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
@@ -157,15 +169,29 @@ func (db *DB) DeleteUserAtomic(id int) error {
 	if _, err := tx.Exec(`DELETE FROM domain_requests WHERE user_id = ?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM user_allowed_ips WHERE user_id = ?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM users WHERE id = ?`, id); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+func (db *DB) UpdateUserIpLimit(userID, ipLimit int) error {
+	if ipLimit < 0 {
+		ipLimit = 0
+	}
+	if ipLimit > 100 {
+		ipLimit = 100
+	}
+	_, err := db.conn.Exec(`UPDATE users SET ip_limit = ? WHERE id = ?`, ipLimit, userID)
+	return err
+}
+
 func (db *DB) ListUsers() ([]User, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, username, password_hash, api_key, role, rate_limit, created_at, last_login
+		`SELECT id, username, password_hash, api_key, role, rate_limit, ip_limit, created_at, last_login
 		 FROM users ORDER BY id`,
 	)
 	if err != nil {
@@ -176,7 +202,7 @@ func (db *DB) ListUsers() ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.CreatedAt, &u.LastLogin); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.APIKey, &u.Role, &u.RateLimit, &u.IpLimit, &u.CreatedAt, &u.LastLogin); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		users = append(users, u)
