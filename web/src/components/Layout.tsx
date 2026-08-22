@@ -49,13 +49,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/admin/users', label: t('nav.users'), icon: FiUsers },
     { to: '/admin/devices', label: t('nav.devices'), icon: FiSmartphone },
     { to: '/admin/domains', label: t('nav.domains'), icon: FiGlobe },
-    { to: '/traffic', label: 'Traffic', icon: FiActivity },
-    { to: '/health', label: 'Health', icon: FiHeart },
+    { to: '/traffic', label: t('nav.traffic'), icon: FiActivity },
+    { to: '/health', label: t('nav.health'), icon: FiHeart },
   ]
   const userNav = [
     { to: '/dashboard', label: t('nav.dashboard'), icon: FiLayout },
-    { to: '/traffic', label: 'Traffic', icon: FiActivity },
-    { to: '/health', label: 'Health', icon: FiHeart },
+    { to: '/traffic', label: t('nav.traffic'), icon: FiActivity },
+    { to: '/health', label: t('nav.health'), icon: FiHeart },
   ]
   const baseNav = user?.role === 'admin' ? adminNav : userNav
   const nav = [...baseNav, { to: '/guide', label: t('nav.guide'), icon: FiBookOpen }]

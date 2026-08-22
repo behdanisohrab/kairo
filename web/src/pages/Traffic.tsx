@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api'
 import { useAuth } from '../App'
+import { useI18n } from '../lib/i18n'
 import { FiActivity, FiUsers, FiSmartphone, FiGlobe, FiClock, FiBarChart2, FiServer } from 'react-icons/fi'
 
 export default function Traffic() {
   const { user } = useAuth()
+  const { t } = useI18n()
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -30,34 +32,34 @@ export default function Traffic() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-[22px] font-semibold tracking-[-0.02em] flex items-center gap-2"><FiActivity size={20} /> Traffic Status</h1>
-        <p className="mt-1 text-sm text-[var(--color-ink-3)]">{isAdmin ? 'Global traffic and per-user breakdown' : 'Your traffic overview'}</p>
+        <h1 className="text-[22px] font-semibold tracking-[-0.02em] flex items-center gap-2"><FiActivity size={20} /> {t('traffic.title')}</h1>
+        <p className="mt-1 text-sm text-[var(--color-ink-3)]">{isAdmin ? t('traffic.subtitleAdmin') : t('traffic.subtitleUser')}</p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="card p-5">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)]"><FiSmartphone size={12} /> Devices</div>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)]"><FiSmartphone size={12} /> {t('traffic.devices')}</div>
           <div className="mt-2 text-[28px] font-semibold leading-none">{isAdmin ? data?.total_devices ?? 0 : data?.devices ?? 0}</div>
-          <div className="mt-1 text-xs text-[var(--color-ink-3)]">{isAdmin ? `${data?.allowlisted ?? 0} allowlisted / ${data?.restricted ?? 0} restricted` : `Rate limit: ${data?.unlimited ? 'Unlimited' : (data?.rate_limit ?? 0) + '/min'}`}</div>
+          <div className="mt-1 text-xs text-[var(--color-ink-3)]">{isAdmin ? `${data?.allowlisted ?? 0} ${t('traffic.allowlisted')} / ${data?.restricted ?? 0} ${t('traffic.restricted')}` : `${t('common.status')}: ${data?.unlimited ? t('users.unlimited') : (data?.rate_limit ?? 0) + '/min'}`}</div>
         </div>
         <div className="card p-5">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)]"><FiBarChart2 size={12} /> Requests</div>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)]"><FiBarChart2 size={12} /> {t('traffic.requests')}</div>
           <div className="mt-2 text-[28px] font-semibold leading-none">{data?.total_requests ?? 0}</div>
-          <div className="mt-1 text-xs text-[var(--color-ink-3)]">{isAdmin ? `${data?.total_users ?? 0} users` : 'Total DNS/tunnel requests'}</div>
+          <div className="mt-1 text-xs text-[var(--color-ink-3)]">{isAdmin ? `${data?.total_users ?? 0} ${t('traffic.totalUsers')}` : t('common.requests')}</div>
         </div>
         <div className="card p-5">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)]"><FiClock size={12} /> Uptime</div>
-          <div className="mt-2 text-[18px] font-semibold leading-none">{isAdmin ? `${Math.floor((data?.uptime_seconds ?? 0)/3600)}h ${Math.floor(((data?.uptime_seconds ?? 0)%3600)/60)}m` : `${data?.devices ?? 0} devices active`}</div>
-          <div className="mt-1 text-xs text-[var(--color-ink-3)]">{isAdmin ? `v${data?.version ?? ''}` : 'Since last reset'}</div>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)]"><FiClock size={12} /> {t('traffic.uptime')}</div>
+          <div className="mt-2 text-[18px] font-semibold leading-none">{isAdmin ? `${Math.floor((data?.uptime_seconds ?? 0)/3600)}h ${Math.floor(((data?.uptime_seconds ?? 0)%3600)/60)}m` : `${data?.devices ?? 0} ${t('traffic.devices')}`}</div>
+          <div className="mt-1 text-xs text-[var(--color-ink-3)]">{isAdmin ? `${t('traffic.version')} ${data?.version ?? ''}` : t('traffic.subtitleUser')}</div>
         </div>
       </div>
 
       {isAdmin && data?.per_user && (
         <div className="card p-0 overflow-hidden">
-          <div className="px-4 py-3 border-b flex items-center gap-2 text-sm font-semibold"><FiUsers size={14} /> Per-user breakdown</div>
+          <div className="px-4 py-3 border-b flex items-center gap-2 text-sm font-semibold"><FiUsers size={14} /> {t('traffic.perUser')}</div>
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>User</th><th>Devices</th><th>Requests</th></tr></thead>
+              <thead><tr><th>{t('common.user')}</th><th>{t('traffic.devices')}</th><th>{t('traffic.requests')}</th></tr></thead>
               <tbody>
                 {(data.per_user as any[]).map((u: any) => (
                   <tr key={u.username}>
@@ -66,7 +68,7 @@ export default function Traffic() {
                     <td>{u.requests}</td>
                   </tr>
                 ))}
-                {(!data.per_user || data.per_user.length === 0) && <tr><td colSpan={3} className="text-center text-xs text-[var(--color-ink-3)] py-6">No data</td></tr>}
+                {(!data.per_user || data.per_user.length === 0) && <tr><td colSpan={3} className="text-center text-xs text-[var(--color-ink-3)] py-6">{t('traffic.noData')}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -74,13 +76,13 @@ export default function Traffic() {
       )}
 
       <div className="card p-0 overflow-hidden">
-        <div className="px-4 py-3 border-b flex items-center gap-2 text-sm font-semibold"><FiGlobe size={14} /> Recent requests {data?.recent ? `(${data.recent.length})` : ''}</div>
+        <div className="px-4 py-3 border-b flex items-center gap-2 text-sm font-semibold"><FiGlobe size={14} /> {t('traffic.recent')} {data?.recent ? `(${data.recent.length})` : ''}</div>
         {!data?.recent || data.recent.length === 0 ? (
-          <div className="p-8 text-center text-sm text-[var(--color-ink-3)]">No recent traffic</div>
+          <div className="p-8 text-center text-sm text-[var(--color-ink-3)]">{t('traffic.noRecent')}</div>
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Domain</th><th>Device</th><th>Time</th></tr></thead>
+              <thead><tr><th>{t('common.domain')}</th><th>{t('common.device')}</th><th>{t('common.time')}</th></tr></thead>
               <tbody>
                 {(data.recent as any[]).slice(0, 20).map((r: any, i: number) => (
                   <tr key={i}>
@@ -97,10 +99,10 @@ export default function Traffic() {
 
       {isAdmin && (
         <div className="card p-4">
-          <h3 className="text-sm font-semibold flex items-center gap-1.5"><FiServer size={14} /> System</h3>
+          <h3 className="text-sm font-semibold flex items-center gap-1.5"><FiServer size={14} /> {t('traffic.system')}</h3>
           <div className="mt-2 grid gap-2 text-xs text-[var(--color-ink-3)]">
-            <div>Version: <span className="font-mono text-[var(--color-ink)]">{data?.version}</span></div>
-            <div>Host: <span className="font-mono text-[var(--color-ink)]">{data?.host || '-'}</span> • VPS IP: <span className="font-mono text-[var(--color-ink)]">{data?.vps_ip || '-'}</span></div>
+            <div>{t('common.version')}: <span className="font-mono text-[var(--color-ink)]">{data?.version}</span></div>
+            <div>{t('common.host')}: <span className="font-mono text-[var(--color-ink)]">{data?.host || '-'}</span> • {t('common.vpsIp')}: <span className="font-mono text-[var(--color-ink)]">{data?.vps_ip || '-'}</span></div>
           </div>
         </div>
       )}
