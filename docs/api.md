@@ -1,32 +1,42 @@
 # Kairo API reference
 
-Kairo exposes a small JSON API for managing the allowlist and the restricted
-domain list. It is served on the same endpoints as DoH: over the SNI router at
-`https://<host>/api/...`, and over the loopback HTTP backend at
-`http://127.0.0.1:8080/api/...`.
+Kairo exposes a JSON API for auth, users, devices, allowlist, restricted
+domains, and domain requests. It is served over the SNI router at
+`https://<host>/api/...` (requires TLS with SNI=`host`), and over the loopback
+HTTP backend at `http://127.0.0.1:8080/api/...` (plain HTTP, no SNI needed;
+ideal for local `curl` and Vite proxy).
+
+Local curl without TLS:
+```bash
+curl http://127.0.0.1:8080/api/status -H "Authorization: Bearer <key>"
+# SNI router (needs SNI):
+curl -k --resolve dns.example.com:8443:127.0.0.1 https://dns.example.com:8443/api/status -H "Authorization: Bearer <key>"
+```
 
 ## Authentication
 
-Every request must present the shared API key. It can be sent as a `key` query
-parameter, as an `X-API-Key` header, or as a `Bearer` token in the
-`Authorization` header. All three forms are equivalent.
+Two mechanisms, checked in order:
+
+1. **Session cookie** `kairo_session` (`HttpOnly`, `SameSite=Lax`, `Secure` when
+   `r.TLS` or `X-Forwarded-Proto:https` or host not `localhost`/`127.0.0.1`;
+   TTL `session_ttl` hours, hourly `ExpireOldSessions` purge, `expires_at > now` enforced).
+
+2. **API key** fallback: `?key=` query, `X-API-Key` header, or `Authorization: Bearer <key>` (constant-time compare). The legacy `api_key` from `config.yaml` is treated as `admin`.
 
 ```bash
 curl "https://dns.example.com/api/allow?key=<key>"
 curl -H "X-API-Key: <key>" "https://dns.example.com/api/allow"
 curl -H "Authorization: Bearer <key>" "https://dns.example.com/api/allow"
+# also: curl -b "kairo_session=<id>" https://dns.example.com/api/auth/me
 ```
 
-Requests without a valid key receive a 401 response. The comparison is
-constant-time, so the endpoint does not leak timing information about the key.
-Rate limiting applies to the whole API: a request beyond the configured `rate.api`
-limit receives a 429 response.
+Missing/invalid auth → `401`. Admin-only endpoints → `403`. Global `rate.api` → `429`.
+
+All mutating user-creation and login bodies are `MaxBytesReader` limited (2K-4K) and
+validated (`username ^[a-zA-Z0-9._-]{3,32}`, `password 6-128`, `rate_limit ≤10000`,
+domain `3-253` no space/slash).
 
 ## Responses
-
-Successful responses have an `ok` field set to `true`. Endpoints that return a
-list put it in a `data` array. Endpoints that perform an action return a
-`message`. Failed responses have `ok` set to `false` and an `error` string.
 
 ```json
 { "ok": true, "data": ["198.51.100.7"] }
@@ -34,98 +44,160 @@ list put it in a `data` array. Endpoints that perform an action return a
 { "ok": false, "error": "invalid or missing API key" }
 ```
 
+Security headers are set on every response:
+`X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: strict-origin-when-cross-origin`,
+`Content-Security-Policy` (strict for UI, `default-src 'none'` for API),
+`Permissions-Policy`. CORS is allowed for origins matching `admin_url`, `doh_url`,
+or `host` (`Allow-Credentials`, `Allow-Headers: Content-Type, Authorization, X-API-Key`).
+
+## Auth
+
+### POST /api/auth/login
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"..."}' \
+  https://dns.example.com/api/auth/login
+# → {ok:true, user:{id,username,role}} + Set-Cookie: kairo_session
+```
+Creates a session (`CreateSession` with `IP` from `X-Forwarded-For` if loopback, else `RemoteAddr`, plus `User-Agent`, `TTL session_ttl`) and updates `last_login`.
+
+### POST /api/auth/logout
+```bash
+curl -X POST -b "kairo_session=..." https://dns.example.com/api/auth/logout
+# also: curl -X POST -H "Authorization: Bearer ..." https://dns.example.com/api/auth/logout
+```
+Deletes the session and clears the cookie (`MaxAge:-1`, same `Secure` logic).
+
+### GET /api/auth/me
+```bash
+curl -b "kairo_session=..." https://dns.example.com/api/auth/me
+curl -H "Authorization: Bearer <key>" https://dns.example.com/api/auth/me
+# → {ok:true, user:{id,username,role,api_key,rate_limit}}
+```
+
+## Public config
+
+### GET /api/public-config  (any auth)
+Returns the public URLs derived from config (or empty if `host` not set). Used by
+the Guide to show the correct DoH URL when `doh_url` is custom.
+
+```bash
+curl -H "Authorization: Bearer <key>" https://dns.example.com/api/public-config
+# → {ok:true, admin_url:"https://panel.example.com/", doh_url:"https://dns.example.com/dns-query", host:"dns.example.com"}
+```
+
+## Users (admin)
+
+### GET /api/users
+List all users sorted by `id`.
+
+### POST /api/users
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"secret123","rate_limit":100}' \
+  -H "Authorization: Bearer <admin_key>" https://dns.example.com/api/users
+# → 201 {ok:true, user:{id,username,api_key,role,rate_limit}}
+```
+Validates username/password, `bcrypt` hash, random `hex(32)` API key, default `role=user`.
+
+### DELETE /api/users/:id
+Atomic `DELETE FROM sessions WHERE user_id=?` + `domain_requests` + `users` in a transaction. `admin` cannot be deleted → `403`.
+
+### POST /api/users/:id/api-key/regenerate
+```bash
+curl -X POST -H "Authorization: Bearer <admin>" https://dns.example.com/api/users/4/api-key/regenerate
+# → {ok:true, api_key:"..."}
+```
+
+### GET /api/users/:id/devices
+Devices for a user via `connection_logs` join, `ORDER BY last_seen DESC`.
+
+## Devices
+
+### GET /api/devices  (admin)
+All devices `ORDER BY last_seen DESC`.
+
+### GET /api/me/devices  (any auth)
+Devices for the authenticated user.
+
+Device shape: `{id, ip, ja3_hash, user_agent, device_type, first_seen, last_seen}`.
+`device_type` classified from `User-Agent` (`Bot`/`Android`/`iOS`/`Desktop`/`Tablet`/`Unknown`/`Other`), `UNIQUE(ip, ja3_hash)` with `ON CONFLICT DO UPDATE last_seen`.
+
+### POST /api/me/api-key/regenerate  (any auth)
+Regenerates the caller's own API key.
+
 ## Managing the allowlist
 
-The allowlist controls which client IPs receive the VPS IP for restricted
-domains and are permitted to use the transparent SNI tunnel.
+### GET /api/allow  (admin)
+Sorted `allowed.txt`.
 
-### List allowed clients
+### POST /api/allow?ip=1.2.3.4  (admin)
+`net.ParseIP` validated, loopback rejected, `409` if already, `saveAllowed()` atomically writes `allowed.txt`.
 
-```bash
-curl "https://dns.example.com/api/allow?key=<key>"
-```
-
-Returns the current allowlist as a sorted array of IP strings.
-
-### Allow a client
-
-```bash
-curl -X POST "https://dns.example.com/api/allow?key=<key>&ip=198.51.100.7"
-```
-
-Adds the given IPv4 or IPv6 address. Loopback addresses are rejected because
-they are always allowed implicitly. Adding an address that is already present
-returns a 409 response, and the change is written to `allowed.txt` immediately.
-
-### Remove a client
-
-```bash
-curl -X DELETE "https://dns.example.com/api/allow?key=<key>&ip=198.51.100.7"
-```
-
-Removes the address. Removing an address that is not present returns a 404
-response.
+### DELETE /api/allow?ip=1.2.3.4  (admin)
+`404` if not present.
 
 ## Managing the restricted list
 
-The restricted list holds the domains that are answered with the VPS IP for
-allowlisted clients. Restricting a domain covers all of its subdomains.
+### GET /api/restricted  (admin)
+Sorted `domains.txt` (subdomains covered: `youtube.com` matches `www.youtube.com` via `IsRestricted` parent walk).
 
-### List restricted domains
+### POST /api/restricted?domain=instagram.com  (admin)
+`NormalizeDomain` lower, trim, `409` if duplicate, `400` if empty.
 
-```bash
-curl "https://dns.example.com/api/restricted?key=<key>"
-```
+### DELETE /api/restricted?domain=instagram.com  (admin)
+`404` if not present.
 
-Returns the current restricted domains as a sorted array.
+## Domain check and requests
 
-### Add a restricted domain
-
-```bash
-curl -X POST "https://dns.example.com/api/restricted?key=<key>&domain=instagram.com"
-```
-
-Adds the domain. A duplicate entry returns a 409 response. The list is written
-to `domains.txt` immediately.
-
-### Remove a restricted domain
+### GET /api/domain/check?domain=example.com  (any auth)
+No admin needed. Returns whether the domain is proxied via `s.st.IsRestricted` (parent walk), `400` if missing/`>253`.
 
 ```bash
-curl -X DELETE "https://dns.example.com/api/restricted?key=<key>&domain=instagram.com"
+curl -H "Authorization: Bearer <key>" "https://dns.example.com/api/domain/check?domain=example.com"
+# → {ok:true, restricted:true/false, domain:"example.com"}
 ```
 
-Removes the domain. A missing entry returns a 404 response.
+### POST /api/domain/request  (any auth)
+Body `{"domain":"example.com"}` or `?domain=` fallback, `MaxBytesReader 1K`, `3-253` no space/slash, `409` if already restricted or `UNIQUE(user_id,domain)` duplicate. Inserts into `domain_requests` (`pending`).
+
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"domain":"example.com"}' \
+  -H "Authorization: Bearer <key>" https://dns.example.com/api/domain/request
+# → 201 {ok:true, request:{id,user_id,username,domain,status,created_at}}
+```
+
+### GET /api/domain/requests  (admin)
+```bash
+curl -H "Authorization: Bearer <admin>" https://dns.example.com/api/domain/requests
+# → {ok:true, requests:[{id,user_id,username,domain,status,created_at}]}
+```
+
+### POST /api/domain/requests/:id/approve  (admin)
+Looks up request, `AddRestricted(domain)` (hot-reload via `saveDomains()`; `already` is tolerated), then `UPDATE status='approved'`.
+
+### POST /api/domain/requests/:id/reject  (admin)
+`UPDATE status='rejected'`.
 
 ## Generating the allowlist from the IP source
 
 ```bash
-curl -X POST "https://dns.example.com/api/generate?key=<key>"
+curl -X POST -H "Authorization: Bearer <key>" https://dns.example.com/api/generate
+# → {ok:true, added:4, unresolved:0, total:6, message:"allowlist regenerated"}
 ```
-
-Resolves every domain in the `ip_source.domains_file` file and merges the
-resulting addresses into the allowlist. It returns the number of newly added
-addresses, the number of unresolved domains, and the new total.
-
-```json
-{ "added": 4, "message": "allowlist regenerated", "ok": true, "total": 6, "unresolved": 0 }
-```
-
-The same operation is available offline through the `kairo gen-ips` subcommand,
-and runs automatically in the background when `ip_source.interval` is greater
-than zero.
 
 ## Status
 
 ```bash
-curl "https://dns.example.com/api/status?key=<key>"
+curl -H "Authorization: Bearer <key>" https://dns.example.com/api/status
 ```
-
-Returns a snapshot of the running service, including the version, the
-configured hostname and VPS IP, the uptime in seconds, both policy lists, the
-upstream resolvers, and the IP source path and interval. It is useful for
-monitoring and for verifying that a configuration change took effect.
+Admin only. Returns `version`, `host`, `admin_url`, `doh_url`, `vps_ip`, `uptime_seconds`, `allowlisted`, `restricted`, `upstream_dns`, `ip_source` (+ interval). `admin_url`/`doh_url` are `Effective*URL()` (derived from `host` if empty).
 
 ## Other endpoints
 
-The root path serves a human-readable status page. The `GET /healthz` endpoint
-returns a plain `ok` and is meant for health checks; it requires no API key.
+`GET /` serves the SPA from `web/dist` (fallback `index.html`) or the status template if `web_dir` missing. `GET /healthz` → `ok` (no auth). `GET /metrics` on `127.0.0.1:9090` (Prometheus, loopback-only).
+
+## Web UI
+
+The UI is built with `bun` (`oven/bun:1-alpine` in Docker, `web/bun.lock`), Vite 8, React 19, Tailwind 4, `react-icons`. Routes: `/login`, `/admin` (Overview), `/admin/users`, `/admin/users/:id/devices`, `/admin/devices`, `/admin/domains`, `/dashboard`, `/guide`. Features: light/dark (`system`), EN/FA RTL (`Vazirmatn`), responsive minimal design, domain/IP management (hot-reload), user domain checker (`/api/domain/check` + request).

@@ -4,7 +4,8 @@ Kairo implements domain-based split routing in a single binary. It combines a
 DNS server with a policy engine and an SNI router so that only traffic for a
 restricted set of domains is sent through your VPS, while everything else keeps
 using the client's normal connection. This design is an implementation of the
-gateway originally described by the bepass-org/smartSNI project.
+gateway originally described by the bepass-org/smartSNI project, now with a
+production web admin panel.
 
 ## The problem
 
@@ -39,34 +40,60 @@ rejected.
 
 The result is transparent from the client's point of view. There is no proxy
 software to install and no certificate to trust. The client only has to point
-its DNS at the VPS, and the routing happens automatically based on the DNS
-answers it receives.
+its DNS at the VPS (plain `vps_ip:53`, `doh_url` like `https://dns.example.com/dns-query`,
+or `tls://dns.example.com:853`), and the routing happens automatically.
 
 ## The components
 
-The service exposes five listeners. A plain DNS server on port 53 accepts UDP
-and TCP queries. A DNS over TLS server on port 853 provides the same answers
-over an encrypted connection. A DNS over HTTPS endpoint is served over the SNI
-router on port 443 and again over a loopback HTTP listener on port 8080 for use
-behind a reverse proxy. The SNI router itself lives on port 443 and carries both
-the DoH and API traffic for your hostname and the transparent tunnel for
-restricted domains. A separate loopback listener on port 9090 serves the
-Prometheus `/metrics` endpoint so it is never exposed publicly.
+The service exposes five listeners plus the web UI. A plain DNS server on port
+53 accepts UDP and TCP queries. A DNS over TLS server on port 853 provides the
+same answers over an encrypted connection. A DNS over HTTPS endpoint is served
+over the SNI router on port 443 and again over a loopback HTTP listener on
+port 8080 for use behind a reverse proxy or for local `curl` without TLS. The
+SNI router itself lives on port 443 and carries both the DoH and API traffic
+for your hostname and the transparent tunnel for restricted domains. A separate
+loopback listener on port 9090 serves the Prometheus `/metrics` endpoint so it
+is never exposed publicly. The web UI (built with `bun` + Vite 8, React 19,
+Tailwind 4, `react-icons`, persisted in `web/dist` and served as SPA fallback)
+adds login, dashboards, device tracking (`JA3` + `User-Agent` classification),
+and management for users, devices, and domains.
 
-All policy lives in a data directory as three plain text files. The `domains.txt`
-file lists restricted domains. The `allowed.txt` file lists client IPs. The
-`domain.txt` file feeds the IP generator, which resolves every domain in it and
-merges the resulting addresses into the allowlist. Kairo watches the first two
-files and applies edits without a restart, and every change made through the API
-is written back to disk atomically.
+All policy lives in a data directory as one SQLite database `kairo.db` (users
+with `bcrypt` passwords and `hex(32)` API keys, sessions with `expires_at`,
+devices `UNIQUE(ip,ja3_hash)` + `connection_logs`, `domain_requests`
+`pending/approved/rejected`) plus three plain text files (`domains.txt`,
+`allowed.txt`, `domain.txt` for the IP generator). Kairo watches the text files
+and applies edits without a restart, and every change made through the API is
+written back atomically.
+
+## Web admin panel
+
+The panel is served from `web_dir` (`./web/dist` locally, `/app/web/dist` in
+Docker, built via `bun install --frozen-lockfile && bun run build` in the
+`oven/bun:1-alpine` Docker stage). Features:
+
+- **Auth**: `POST /api/auth/login` → `kairo_session` cookie (`HttpOnly`,
+  `SameSite=Lax`, `Secure` when TLS/`X-Forwarded-Proto:https`, hourly purge),
+  fallback `Authorization: Bearer <key>` / `X-API-Key` / `?key=` (constant-time).
+- **Dashboards**: admin Overview (users/devices/health), user Dashboard (API key
+  reveal/copy/regenerate, devices, **Check a domain** → `GET /api/domain/check`
+  + `POST /api/domain/request` if not proxied).
+- **Management**: `Admin → Users` (create `^[a-zA-Z0-9._-]{3,32}`, password
+  `6-128`, `rate_limit` capped, delete atomic with sessions/requests, regen key),
+  `Admin → Devices` (filter/sort/pagination), `Admin → Domains` (single/bulk
+  add → hot-reload `domains.txt`, delete, pending `Approve`/`Reject` queue).
+- **Guide**: bilingual EN/FA (RTL `Vazirmatn`), light/dark `system` default,
+  platform steps for Windows/macOS/Linux/Android/iOS/Firefox/Chrome, IP
+  whitelisting docs, `curl` for `application/dns-message` and `GET /api/me/devices`,
+  `doh_url`/`admin_url` from `GET /api/public-config` (or `host` fallback).
 
 ## Two routing decisions
 
 A client only receives the VPS IP for a restricted domain if it is also in the
 allowlist. An unknown client gets normal answers and therefore never reaches the
 SNI router for a tunneled connection. The allowlist is what limits split routing
-to the machines you own, for example your home router or your phone, while
-anyone else on your network keeps plain connectivity.
+to the machines you own, while anyone else on your network keeps plain
+connectivity.
 
 The routing decision is made twice. First the DNS answer sends the allowlisted
 client to the VPS. Then the SNI router checks the allowlist again before it
@@ -76,11 +103,12 @@ domains never touch the VPS at all.
 ## What is guaranteed and what is not
 
 Split routing is cooperative. A client that bypasses your DNS and resolves the
-real address directly is not routed through the VPS, because there is no way to
-force traffic without full device control. Only TCP traffic is tunneled. UDP
-and HTTP/3 sessions are not redirected, since the SNI router only inspects TCP
-handshakes. For strict enforcement you should block QUIC on the client. These
-limits are discussed further in the security document.
+real address directly is not routed through the VPS. Only TCP traffic is
+tunneled. UDP and HTTP/3 sessions are not redirected, since the SNI router only
+inspects TCP handshakes. For strict enforcement you should block QUIC on the
+client. These limits are discussed further in the security document.
 
-The next documents cover the configuration format, deployment and operations,
-the management API, and the security model in detail.
+The next documents cover the configuration format (including `admin_url`/`doh_url`
+and `web_dir`), deployment and operations (including `bun` build), the management
+API (including `public-config` and domain requests), and the security model in
+detail.
