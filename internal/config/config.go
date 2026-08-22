@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,12 +30,21 @@ type Config struct {
 	TTL         uint32       `yaml:"ttl"` // TTL for the fake A records
 	Rate        RateConfig   `yaml:"rate"`
 	IPSource    IPSource     `yaml:"ip_source"`
+	AdminURL    string       `yaml:"admin_url"` // public URL for admin panel, e.g. https://panel.example.com
+	DoHURL      string       `yaml:"doh_url"`   // public URL for DoH, e.g. https://dns.example.com/dns-query
 
 	// ProxyProtocol makes the SNI router trust the client address in a PROXY
 	// protocol v1 header, but only from loopback peers (a local nginx). Use it
 	// when nginx fronts :443 and forwards unknown SNIs to us, otherwise the
 	// allowlist gate would see nginx's own address instead of the client's.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
+
+	// Admin password for web UI login. Falls back to api_key when empty.
+	AdminPassword string `yaml:"admin_password"`
+	// WebDir is the path to the built frontend files (served as static files).
+	WebDir string `yaml:"web_dir"`
+	// SessionTTL is the session lifetime in hours. Defaults to 24.
+	SessionTTL int `yaml:"session_ttl"`
 }
 
 // IPSource feeds the allowlist generator: resolve the domains in DomainsFile,
@@ -107,6 +117,8 @@ func DefaultConfig() *Config {
 			RenewBeforeDays: 30,
 			HTTPListen:      ":80",
 		},
+		WebDir:      "./web/dist",
+		SessionTTL:  24,
 	}
 }
 
@@ -133,6 +145,8 @@ func NormalizeAndValidate(cfg *Config) error {
 	cfg.HostBackend = strings.TrimSpace(cfg.HostBackend)
 	cfg.VPSIP = strings.TrimSpace(cfg.VPSIP)
 	cfg.IPSource.DomainsFile = strings.TrimSpace(cfg.IPSource.DomainsFile)
+	cfg.AdminURL = strings.TrimSpace(cfg.AdminURL)
+	cfg.DoHURL = strings.TrimSpace(cfg.DoHURL)
 	if cfg.IPSource.Interval < 0 {
 		cfg.IPSource.Interval = 0
 	}
@@ -162,6 +176,27 @@ func NormalizeAndValidate(cfg *Config) error {
 		cfg.Rate.APIBurst = 40
 	}
 
+	// Validate admin_url and doh_url if set
+	if cfg.AdminURL != "" {
+		u, err := url.Parse(cfg.AdminURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid admin_url %q: must be http(s) URL", cfg.AdminURL)
+		}
+	}
+	if cfg.DoHURL != "" {
+		u, err := url.Parse(cfg.DoHURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid doh_url %q: must be http(s) URL", cfg.DoHURL)
+		}
+	}
+	// Derive defaults from host if not set
+	if cfg.AdminURL == "" && cfg.Host != "" {
+		cfg.AdminURL = "https://" + cfg.Host + "/"
+	}
+	if cfg.DoHURL == "" && cfg.Host != "" {
+		cfg.DoHURL = "https://" + cfg.Host + "/dns-query"
+	}
+
 	if cfg.ACME.Email != "" {
 		if cfg.Host == "" {
 			return fmt.Errorf("acme.email requires host")
@@ -179,6 +214,17 @@ func NormalizeAndValidate(cfg *Config) error {
 			cfg.ACME.RenewBeforeDays = 30
 		}
 	}
+
+	if cfg.AdminPassword == "" {
+		cfg.AdminPassword = cfg.APIKey
+	}
+	if cfg.WebDir == "" {
+		cfg.WebDir = "./web/dist"
+	}
+	if cfg.SessionTTL <= 0 {
+		cfg.SessionTTL = 24
+	}
+
 	return nil
 }
 
@@ -186,3 +232,9 @@ func NormalizeAndValidate(cfg *Config) error {
 func NormalizeDomain(d string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(d)), ".")
 }
+
+// EffectiveAdminURL returns the configured admin panel URL or empty if not set.
+func (c *Config) EffectiveAdminURL() string { return c.AdminURL }
+
+// EffectiveDoHURL returns the configured DoH URL or empty if not set.
+func (c *Config) EffectiveDoHURL() string { return c.DoHURL }

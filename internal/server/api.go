@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"kairo/internal/database"
 )
 
-// handleAPI routes authenticated /api/* requests.
+// handleAPI routes authenticated /api/* requests. Supports both the legacy
+// single API key and per-user API keys from the database.
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if !s.apiLimiter.Allow() {
 		if s.Metrics != nil {
@@ -18,29 +22,81 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusTooManyRequests, apiError("rate limit exceeded"))
 		return
 	}
-	if !s.checkKey(r) {
-		writeJSON(w, http.StatusUnauthorized, apiError("invalid or missing API key"))
+
+	path := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
+
+	// Auth routes don't require authentication
+	if path == "auth/login" {
+		s.handleLogin(w, r)
 		return
 	}
 
-	path := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
-	switch path {
-	case "allow":
-		s.handleAllow(w, r)
-	case "restricted":
-		s.handleRestricted(w, r)
-	case "generate":
-		s.handleGenerate(w, r)
-	case "status":
-		s.handleAPIStatus(w)
+	// Check for session auth (cookie) first, then fall back to API key
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("invalid or missing authentication"))
+		return
+	}
+
+	// Route based on path prefix
+	switch {
+	case path == "auth/logout":
+		s.handleLogout(w, r)
+	case path == "auth/me":
+		s.handleMe(w, r)
+	case path == "users" && r.Method == http.MethodGet:
+		s.requireAdmin(s.handleListUsers)(w, r)
+	case path == "users" && r.Method == http.MethodPost:
+		s.requireAdmin(s.handleCreateUser)(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/devices"):
+		s.requireAdmin(s.handleUserDevices)(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/api-key/regenerate"):
+		s.requireAdmin(s.handleRegenerateAPIKey)(w, r)
+	case strings.HasPrefix(path, "users/"):
+		s.requireAdmin(s.handleDeleteUser)(w, r)
+	case path == "devices" && r.Method == http.MethodGet:
+		s.requireAdmin(s.handleAllDevices)(w, r)
+	case path == "me/devices":
+		s.handleMyDevices(w, r)
+	case path == "me/api-key/regenerate":
+		s.handleMyRegenerateAPIKey(w, r)
+	case path == "public-config":
+		s.handlePublicConfig(w, r)
+	case path == "domain/check":
+		s.handleDomainCheck(w, r)
+	case path == "domain/request" && r.Method == http.MethodPost:
+		s.handleDomainRequest(w, r)
+	case path == "domain/requests" && r.Method == http.MethodGet:
+		s.requireAdmin(s.handleListDomainRequests)(w, r)
+	case strings.HasPrefix(path, "domain/requests/") && strings.HasSuffix(path, "/approve"):
+		s.requireAdmin(s.handleApproveDomainRequest)(w, r)
+	case strings.HasPrefix(path, "domain/requests/") && strings.HasSuffix(path, "/reject"):
+		s.requireAdmin(s.handleRejectDomainRequest)(w, r)
+	case path == "allow":
+		s.requireAdmin(s.handleAllow)(w, r)
+	case path == "restricted":
+		s.requireAdmin(s.handleRestricted)(w, r)
+	case path == "generate":
+		s.requireAdmin(s.handleGenerate)(w, r)
+	case path == "status":
+		s.requireAdmin(s.handleAPIStatus)(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, apiError("unknown endpoint"))
 	}
 }
 
-// checkKey compares the supplied key in constant time, so nobody learns about
-// it from response timing. Query param, header, or Bearer token, take your pick.
-func (s *Server) checkKey(r *http.Request) bool {
+// authenticateRequest checks for session cookie first, then falls back to API key.
+func (s *Server) authenticateRequest(r *http.Request) *database.User {
+	// Try session cookie first
+	if cookie, err := r.Cookie("kairo_session"); err == nil {
+		if session, _ := s.db.GetSession(cookie.Value); session != nil {
+			if user, _ := s.db.GetUserByID(session.UserID); user != nil {
+				return user
+			}
+		}
+	}
+
+	// Fall back to API key (legacy single key or per-user key)
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		key = r.Header.Get("X-API-Key")
@@ -50,7 +106,27 @@ func (s *Server) checkKey(r *http.Request) bool {
 			key = strings.TrimPrefix(auth, "Bearer ")
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1
+
+	if key == "" {
+		return nil
+	}
+
+	// Check legacy single API key - treat as admin
+	if subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1 {
+		return &database.User{
+			ID:       0,
+			Username: "admin",
+			Role:     "admin",
+			APIKey:   key,
+		}
+	}
+
+	// Check per-user API keys
+	if user, _ := s.db.GetUserByAPIKey(key); user != nil {
+		return user
+	}
+
+	return nil
 }
 
 func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +220,6 @@ func (s *Server) handleRestricted(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGenerate runs the ip-source resolution on demand. Same as -gen-ips,
-// minus the reboot.
 func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
@@ -165,11 +239,13 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleAPIStatus(w http.ResponseWriter) {
+func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                 true,
 		"version":            s.Version,
 		"host":               s.cfg.Host,
+		"admin_url":          s.cfg.EffectiveAdminURL(),
+		"doh_url":            s.cfg.EffectiveDoHURL(),
 		"vps_ip":             s.cfg.VPSIP,
 		"uptime_seconds":     int64(time.Since(s.start).Seconds()),
 		"allowlisted":        s.st.AllowedList(),
@@ -178,6 +254,384 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter) {
 		"ip_source":          s.st.IPSourcePath(),
 		"ip_source_interval": s.cfg.IPSource.Interval,
 	})
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.db.ListUsers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	type userJSON struct {
+		ID        int        `json:"id"`
+		Username  string     `json:"username"`
+		APIKey    string     `json:"api_key"`
+		Role      string     `json:"role"`
+		RateLimit int        `json:"rate_limit"`
+		CreatedAt time.Time  `json:"created_at"`
+		LastLogin *time.Time `json:"last_login,omitempty"`
+	}
+
+	var result []userJSON
+	for _, u := range users {
+		result = append(result, userJSON{
+			ID:        u.ID,
+			Username:  u.Username,
+			APIKey:    u.APIKey,
+			Role:      u.Role,
+			RateLimit: u.RateLimit,
+			CreatedAt: u.CreatedAt,
+			LastLogin: u.LastLogin,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"users": result,
+	})
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		RateLimit int    `json:"rate_limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid request body"))
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if len(req.Username) < 3 || len(req.Username) > 32 {
+		writeJSON(w, http.StatusBadRequest, apiError("username must be 3-32 characters"))
+		return
+	}
+	if len(req.Password) < 6 || len(req.Password) > 128 {
+		writeJSON(w, http.StatusBadRequest, apiError("password must be 6-128 characters"))
+		return
+	}
+	// allow only alphanumeric and . _ -
+	for _, ch := range req.Username {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-') {
+			writeJSON(w, http.StatusBadRequest, apiError("username contains invalid characters"))
+			return
+		}
+	}
+	if req.RateLimit <= 0 {
+		req.RateLimit = 100
+	}
+	if req.RateLimit > 10000 {
+		writeJSON(w, http.StatusBadRequest, apiError("rate_limit too large"))
+		return
+	}
+
+	user, err := s.db.CreateUser(req.Username, req.Password, "user")
+	if err != nil {
+		writeJSON(w, http.StatusConflict, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"ok": true,
+		"user": map[string]interface{}{
+			"id":        user.ID,
+			"username":  user.Username,
+			"api_key":   user.APIKey,
+			"role":      user.Role,
+			"rate_limit": user.RateLimit,
+		},
+	})
+}
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+
+	idStr := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/"), "/api/users/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
+		return
+	}
+
+	target, err := s.db.GetUserByID(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, apiError("user not found"))
+		return
+	}
+	if target.Role == "admin" {
+		writeJSON(w, http.StatusForbidden, apiError("cannot delete admin user"))
+		return
+	}
+
+	if err := s.db.DeleteUserAtomic(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, apiMessage("user deleted"))
+}
+
+func (s *Server) handleUserDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
+	path = strings.TrimSuffix(path, "/devices")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
+		return
+	}
+
+	devices, err := s.db.GetDevicesByUser(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"devices": devices,
+	})
+}
+
+func (s *Server) handleRegenerateAPIKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
+	path = strings.TrimSuffix(path, "/api-key/regenerate")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
+		return
+	}
+
+	newKey, err := s.db.UpdateUserAPIKey(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":     true,
+		"api_key": newKey,
+	})
+}
+
+func (s *Server) handleAllDevices(w http.ResponseWriter, r *http.Request) {
+	devices, err := s.db.GetAllDevices()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"devices": devices,
+	})
+}
+
+func (s *Server) handleMyDevices(w http.ResponseWriter, r *http.Request) {
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
+		return
+	}
+
+	devices, err := s.db.GetDevicesByUser(user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"devices": devices,
+	})
+}
+
+func (s *Server) handleMyRegenerateAPIKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
+		return
+	}
+
+	newKey, err := s.db.UpdateUserAPIKey(user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"api_key": newKey,
+	})
+}
+
+func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		"admin_url": s.cfg.EffectiveAdminURL(),
+		"doh_url":   s.cfg.EffectiveDoHURL(),
+		"host":      s.cfg.Host,
+	})
+}
+
+func (s *Server) handleDomainCheck(w http.ResponseWriter, r *http.Request) {
+	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+	if domain == "" {
+		writeJSON(w, http.StatusBadRequest, apiError("missing domain"))
+		return
+	}
+	if len(domain) > 253 {
+		writeJSON(w, http.StatusBadRequest, apiError("domain too long"))
+		return
+	}
+	restricted := s.st.IsRestricted(domain)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "restricted": restricted, "domain": domain})
+}
+
+func (s *Server) handleDomainRequest(w http.ResponseWriter, r *http.Request) {
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	// Try JSON body first, then query param fallback
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		req.Domain = r.URL.Query().Get("domain")
+	}
+	domain := strings.TrimSpace(req.Domain)
+	domain = strings.ToLower(domain)
+	if domain == "" {
+		writeJSON(w, http.StatusBadRequest, apiError("domain is required"))
+		return
+	}
+	if len(domain) < 3 || len(domain) > 253 {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid domain length"))
+		return
+	}
+	if strings.Contains(domain, " ") || strings.Contains(domain, "/") {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid domain format"))
+		return
+	}
+	if s.st.IsRestricted(domain) {
+		writeJSON(w, http.StatusConflict, apiError("domain already proxied"))
+		return
+	}
+	dr, err := s.db.CreateDomainRequest(user.ID, domain)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, apiError(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"ok": true, "request": dr})
+}
+
+func (s *Server) handleListDomainRequests(w http.ResponseWriter, r *http.Request) {
+	reqs, err := s.db.ListDomainRequests()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if reqs == nil {
+		reqs = []database.DomainRequest{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "requests": reqs})
+}
+
+func (s *Server) handleApproveDomainRequest(w http.ResponseWriter, r *http.Request) {
+	// path: /api/domain/requests/:id/approve
+	prefix := "/api/domain/requests/"
+	suffix := "/approve"
+	idStr := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, suffix), prefix)
+	idStr = strings.TrimSuffix(idStr, "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid request id"))
+		return
+	}
+	dr, err := s.db.GetDomainRequest(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if dr == nil {
+		writeJSON(w, http.StatusNotFound, apiError("request not found"))
+		return
+	}
+	if _, err := s.st.AddRestricted(dr.Domain); err != nil {
+		// if already exists, still approve
+		if !strings.Contains(err.Error(), "already") {
+			writeJSON(w, http.StatusBadRequest, apiError(err.Error()))
+			return
+		}
+	}
+	_ = s.db.UpdateDomainRequestStatus(id, "approved")
+	writeJSON(w, http.StatusOK, apiMessage("domain approved and proxied"))
+}
+
+func (s *Server) handleRejectDomainRequest(w http.ResponseWriter, r *http.Request) {
+	prefix := "/api/domain/requests/"
+	suffix := "/reject"
+	idStr := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, suffix), prefix)
+	idStr = strings.TrimSuffix(idStr, "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid request id"))
+		return
+	}
+	dr, err := s.db.GetDomainRequest(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if dr == nil {
+		writeJSON(w, http.StatusNotFound, apiError("request not found"))
+		return
+	}
+	_ = s.db.UpdateDomainRequestStatus(id, "rejected")
+	writeJSON(w, http.StatusOK, apiMessage("request rejected"))
+}
+
+// requireAdmin wraps a handler with admin role check. The user must already
+// be authenticated via the session/API key check above.
+func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := s.authenticateRequest(r)
+		if user == nil || user.Role != "admin" {
+			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
+			return
+		}
+		next(w, r)
+	}
 }
 
 func apiError(msg string) map[string]interface{} {

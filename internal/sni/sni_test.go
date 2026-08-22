@@ -69,7 +69,7 @@ func startRouter(cfg *config.Config, st *state.State) (addr string, stop func())
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
-			handleConn(cfg, st, nil, conn, dummyHandler(), nil)
+			handleConn(cfg, st, nil, conn, dummyHandler(), nil, nil)
 		}
 		close(done)
 	}()

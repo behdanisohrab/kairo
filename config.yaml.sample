@@ -10,6 +10,12 @@
 # Public hostname for DoH and the API (matched via SNI).
 host: dns.example.com
 
+# Public URLs for admin panel and DoH. If empty, derived from host as
+# https://<host>/ and https://<host>/dns-query. Set explicitly if behind
+# a reverse proxy or custom domain.
+admin_url: https://dns.example.com/
+doh_url: https://dns.example.com/dns-query
+
 # Where host SNI goes when we are NOT terminating TLS. Leave empty to have
 # Kairo terminate TLS itself with the ACME-managed certificate.
 host_backend: ""
@@ -19,6 +25,15 @@ vps_ip: 1.2.3.4
 
 # Shared secret for /api/*. Keep it long and ugly.
 api_key: REPLACE_WITH_A_STRONG_SECRET
+
+# Admin password for web UI login. Defaults to api_key when empty.
+admin_password: ""
+
+# Path to the built frontend files (served as static files).
+web_dir: ./web/dist
+
+# Session lifetime in hours (default: 24).
+session_ttl: 24
 
 # Upstream DNS resolvers.
 upstream_dns:

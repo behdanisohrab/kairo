@@ -62,6 +62,8 @@ func defaultConfigYAML(apiKey string) []byte {
 	cfg := Config{
 		Host:        "dns.example.com",
 		HostBackend: "",
+		AdminURL:    "https://dns.example.com/",
+		DoHURL:      "https://dns.example.com/dns-query",
 		VPSIP:       "1.2.3.4",
 		APIKey:      apiKey,
 		Upstream:    []string{"1.1.1.1:53", "8.8.8.8:53"},

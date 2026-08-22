@@ -3,3 +3,7 @@ build/
 nohup.out
 /kairo
 *.tmp
+web/dist/
+web/node_modules/
+configs/
+data/

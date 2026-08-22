@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#141210" />
+    <meta name="description" content="Kairo — split-routing gateway. Secure DNS (DoH/DoT) with policy engine & SNI router. Production-ready frontend." />
+    <title>Kairo — Split Gateway</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      // Prevent flash: apply theme/lang before React mounts
+      (function(){
+        try{
+          var t = localStorage.getItem('kairo-theme');
+          var resolved = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', resolved);
+          document.documentElement.style.colorScheme = resolved;
+          var l = localStorage.getItem('kairo-lang');
+          if(l === 'fa' || (!l && navigator.language.startsWith('fa'))) {
+            document.documentElement.lang='fa'; document.documentElement.dir='rtl';
+          }
+        }catch(e){}
+      })();
+    </script>
+    <style>
+      html { scrollbar-gutter: stable; }
+      body { margin: 0; background: #f6f5f1; }
+      [data-theme="dark"] body { background: #0f0e0d; }
+      #root:empty::before {
+        content: "";
+        display: block;
+        height: 100vh;
+        background:
+          radial-gradient(1200px 600px at 20% -10%, rgba(43,43,255,0.07), transparent 60%),
+          radial-gradient(900px 500px at 90% 0%, rgba(245,158,11,0.07), transparent 60%),
+          #f6f5f1;
+      }
+      [data-theme="dark"] #root:empty::before {
+        background:
+          radial-gradient(1200px 600px at 20% -10%, rgba(91,91,255,0.10), transparent 60%),
+          radial-gradient(900px 500px at 90% 0%, rgba(245,158,11,0.06), transparent 60%),
+          #0f0e0d;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <div style="max-width:600px;margin:4rem auto;padding:1.5rem;font-family:system-ui,sans-serif;text-align:center">
+        <h1 style="font-size:1.25rem;font-weight:600">JavaScript required</h1>
+        <p>Kairo’s dashboard requires JavaScript. Please enable it and reload.</p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

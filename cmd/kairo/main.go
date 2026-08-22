@@ -10,12 +10,15 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/alecthomas/kong"
 
 	"kairo/internal/acme"
 	"kairo/internal/config"
+	"kairo/internal/database"
 	"kairo/internal/logx"
 	"kairo/internal/metrics"
 	"kairo/internal/server"
@@ -71,6 +74,34 @@ func (r *RunCmd) Run() error {
 		return err
 	}
 
+	// Initialize database
+	dbPath := filepath.Join(cfg.DataDir, "kairo.db")
+	db, err := database.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+
+	// Ensure admin user exists (auto-created from api_key)
+	if err := db.EnsureAdmin("admin", cfg.AdminPassword); err != nil {
+		return fmt.Errorf("ensure admin user: %w", err)
+	}
+	slog.Info("admin user ready")
+
+	// Clean up expired sessions periodically
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = db.ExpireOldSessions()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	st, err := state.NewState(cfg)
 	if err != nil {
 		return err
@@ -86,6 +117,7 @@ func (r *RunCmd) Run() error {
 
 	m := metrics.New(st.AllowedCount, st.RestrictedCount)
 	srv := server.New(cfg, st, version.Version, m, getCert)
+	srv.SetDB(db)
 	handler := srv.BuildHandler()
 
 	slog.Info("Kairo starting", "version", version.Version, "host", cfg.Host, "vps_ip", cfg.VPSIP)
@@ -95,7 +127,7 @@ func (r *RunCmd) Run() error {
 	go srv.StartDoT()
 	go srv.StartHTTP()
 	go srv.StartMetrics()
-	go sni.Start(cfg, st, m, handler, getCert)
+	go sni.Start(cfg, st, m, handler, getCert, db)
 	if renew != nil {
 		go renew(ctx)
 	}

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"kairo/internal/config"
+	"kairo/internal/database"
 	"kairo/internal/metrics"
 	"kairo/internal/state"
 )
@@ -28,6 +29,7 @@ type GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 type Server struct {
 	cfg        *config.Config
 	st         *state.State
+	db         *database.DB
 	Version    string
 	Metrics    *metrics.Metrics
 	getCert    GetCertificate

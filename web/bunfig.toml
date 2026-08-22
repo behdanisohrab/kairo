@@ -1,0 +1,7 @@
+[install]
+# Use exact versions from bun.lock for reproducible builds
+frozenLockfile = false
+
+[install.cache]
+# Cache to speed up CI
+disableManifestCaching = false

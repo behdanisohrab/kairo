@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"kairo/internal/config"
+	"kairo/internal/database"
 	"kairo/internal/metrics"
 	"kairo/internal/netutil"
 	"kairo/internal/state"
@@ -26,7 +27,8 @@ import (
 // for our own hostname and tunnelling everything else to allowlisted clients.
 // getCert supplies the certificate for the host SNI; it may be nil, in which
 // case TLS termination is skipped and host SNI must go to host_backend instead.
-func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http.Handler, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) {
+// db is optional; when non-nil, device tracking is enabled.
+func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http.Handler, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), db *database.DB) {
 	ln, err := net.Listen("tcp", cfg.Listen.HTTPS)
 	if err != nil {
 		slog.Error("SNI router listen", "addr", cfg.Listen.HTTPS, "error", err)
@@ -50,11 +52,11 @@ func Start(cfg *config.Config, st *state.State, m *metrics.Metrics, handler http
 		if err != nil {
 			continue
 		}
-		go handleConn(cfg, st, m, conn, handler, tlsConfig)
+		go handleConn(cfg, st, m, conn, handler, tlsConfig, db)
 	}
 }
 
-func handleConn(cfg *config.Config, st *state.State, m *metrics.Metrics, clientConn net.Conn, handler http.Handler, tlsConfig *tls.Config) {
+func handleConn(cfg *config.Config, st *state.State, m *metrics.Metrics, clientConn net.Conn, handler http.Handler, tlsConfig *tls.Config, db *database.DB) {
 	defer clientConn.Close()
 
 	// Everything is read through a bufio.Reader so a PROXY protocol header can
@@ -113,6 +115,14 @@ func handleConn(cfg *config.Config, st *state.State, m *metrics.Metrics, clientC
 
 	recordSNI(m, "tunneled")
 	tunnel(clientConn, reader, peeked, st.TunnelAddr(sniName))
+
+	// Record device and connection for tracking (best-effort, non-blocking)
+	if db != nil && peerIP != nil {
+		ja3Hash := ComputeJA3(hello)
+		if device, err := db.UpsertDevice(peerIP.String(), ja3Hash, ""); err == nil {
+			_ = db.UpsertConnectionLog(device.ID, nil, sniName)
+		}
+	}
 }
 
 // recordSNI counts one SNI router decision by outcome.
