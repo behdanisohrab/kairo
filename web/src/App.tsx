@@ -19,6 +19,7 @@ const Traffic = lazy(() => import('./pages/Traffic'))
 const Health = lazy(() => import('./pages/Health'))
 const UserDashboard = lazy(() => import('./pages/user/Dashboard'))
 const Guide = lazy(() => import('./pages/Guide'))
+const Ips = lazy(() => import('./pages/Ips'))
 
 // ── Auth context ────────────────────────────────────────────────────
 interface AuthCtx {
@@ -149,6 +150,7 @@ function AppRoutes() {
               <Route path="/health" element={<Guard><Layout><Health /></Layout></Guard>} />
               <Route path="/dashboard" element={<Guard><Layout><UserDashboard /></Layout></Guard>} />
               <Route path="/guide" element={<Guard><Layout><Guide /></Layout></Guard>} />
+              <Route path="/ips" element={<Guard><Layout><Ips /></Layout></Guard>} />
               <Route
                 path="/"
                 element={

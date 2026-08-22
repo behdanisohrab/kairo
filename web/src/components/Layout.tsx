@@ -17,6 +17,7 @@ import {
   FiArrowRight,
   FiActivity,
   FiHeart,
+  FiShield,
 } from 'react-icons/fi'
 import { useTheme } from '../lib/theme'
 import { useI18n } from '../lib/i18n'
@@ -49,11 +50,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/admin/users', label: t('nav.users'), icon: FiUsers },
     { to: '/admin/devices', label: t('nav.devices'), icon: FiSmartphone },
     { to: '/admin/domains', label: t('nav.domains'), icon: FiGlobe },
+    { to: '/ips', label: t('nav.ips'), icon: FiShield },
     { to: '/traffic', label: t('nav.traffic'), icon: FiActivity },
     { to: '/health', label: t('nav.health'), icon: FiHeart },
   ]
   const userNav = [
     { to: '/dashboard', label: t('nav.dashboard'), icon: FiLayout },
+    { to: '/ips', label: t('nav.ips'), icon: FiShield },
     { to: '/traffic', label: t('nav.traffic'), icon: FiActivity },
     { to: '/health', label: t('nav.health'), icon: FiHeart },
   ]
@@ -67,7 +70,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     const map: Record<string, string> = {
       admin: t('nav.overview'), users: t('nav.users'), devices: t('nav.devices'),
       dashboard: t('nav.dashboard'), guide: t('nav.guide'), domains: 'Domains',
-      traffic: 'Traffic', health: 'Health',
+      traffic: 'Traffic', health: 'Health', ips: t('nav.ips'),
     }
     return map[seg] || seg
   }

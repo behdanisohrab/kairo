@@ -77,6 +77,10 @@ func (db *DB) CreateUser(username, password, role string) (*User, error) {
 }
 
 func (db *DB) CreateUserWithRateLimit(username, password, role string, rateLimit int) (*User, error) {
+	return db.CreateUserWithRateLimitAndIpLimit(username, password, role, rateLimit, 3)
+}
+
+func (db *DB) CreateUserWithRateLimitAndIpLimit(username, password, role string, rateLimit, ipLimit int) (*User, error) {
 	hash, err := HashPassword(password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
@@ -90,17 +94,25 @@ func (db *DB) CreateUserWithRateLimit(username, password, role string, rateLimit
 	if role == "" {
 		role = "user"
 	}
-	// rateLimit 0 means unlimited
 	if rateLimit < 0 {
 		rateLimit = 0
 	}
 	if rateLimit > 10000 {
 		rateLimit = 10000
 	}
+	if ipLimit < 0 {
+		ipLimit = 0
+	}
+	if ipLimit > 100 {
+		ipLimit = 100
+	}
+	if ipLimit == 0 && rateLimit == 0 {
+		// allow 0 for both unlimited, keep as 0
+	}
 
 	result, err := db.conn.Exec(
-		`INSERT INTO users (username, password_hash, api_key, role, rate_limit) VALUES (?, ?, ?, ?, ?)`,
-		username, hash, apiKey, role, rateLimit,
+		`INSERT INTO users (username, password_hash, api_key, role, rate_limit, ip_limit) VALUES (?, ?, ?, ?, ?, ?)`,
+		username, hash, apiKey, role, rateLimit, ipLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)

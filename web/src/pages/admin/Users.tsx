@@ -5,7 +5,7 @@ import type { UserData } from '../../api'
 import { useToast } from '../../components/ui/Toast'
 import { ConfirmModal, Modal } from '../../components/ui/Modal'
 import { useI18n } from '../../lib/i18n'
-import { FiSearch, FiPlus, FiTrash2, FiKey, FiSmartphone, FiCopy, FiCheck, FiX, FiUserPlus, FiZap, FiEdit3 } from 'react-icons/fi'
+import { FiSearch, FiPlus, FiTrash2, FiKey, FiSmartphone, FiCopy, FiCheck, FiX, FiUserPlus, FiZap, FiEdit3, FiShield, FiExternalLink } from 'react-icons/fi'
 
 function validateUsername(v: string) {
   if (v.length < 3) return 'At least 3 characters'
@@ -26,6 +26,8 @@ export default function Users() {
   const [formPass, setFormPass] = useState('')
   const [formRate, setFormRate] = useState('100')
   const [unlimited, setUnlimited] = useState(false)
+  const [formIpLimit, setFormIpLimit] = useState('5')
+  const [unlimitedIp, setUnlimitedIp] = useState(false)
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<UserData | null>(null)
   const [regenTarget, setRegenTarget] = useState<UserData | null>(null)
@@ -33,14 +35,26 @@ export default function Users() {
   const [lastKey, setLastKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [editRate, setEditRate] = useState<{ id: number; rate: string; unlimited: boolean } | null>(null)
+  const [editIpLimit, setEditIpLimit] = useState<{ id: number; ip: string; unlimited: boolean } | null>(null)
+  const [ipCounts, setIpCounts] = useState<Record<number, number>>({})
   const { success, error } = useToast()
   const { t } = useI18n()
 
   const load = async () => {
     setLoading(true)
     const r = await api.listUsers()
-    if (r.ok && r.users) setUsers(r.users)
-    else if (!r.ok) error(r.error || 'Failed to load users')
+    if (r.ok && r.users) {
+      setUsers(r.users)
+      // fetch per-user IP counts in parallel (non-blocking for table)
+      Promise.all(r.users.map(async (u) => {
+        const ir = await api.userIPs(u.id)
+        return [u.id, ir.ok ? (ir.ips?.length ?? 0) : 0] as const
+      })).then((pairs) => {
+        const m: Record<number, number> = {}
+        for (const [id, c] of pairs) m[id] = c
+        setIpCounts(m)
+      })
+    } else if (!r.ok) error(r.error || 'Failed to load users')
     setLoading(false)
   }
   useEffect(() => { load() }, [])
@@ -58,11 +72,12 @@ export default function Users() {
     if (uErr || pErr) { error(uErr || pErr || 'Fix form errors'); return }
     setCreating(true)
     const rate = unlimited ? 0 : (parseInt(formRate) || 100)
-    const r = await api.createUser(formUser.trim(), formPass, rate)
+    const ipLim = unlimitedIp ? 0 : (parseInt(formIpLimit) || 5)
+    const r = await api.createUser(formUser.trim(), formPass, rate, ipLim)
     if (r.ok && r.user) {
-      success(`User "${r.user.username}" created${rate===0?' (unlimited)':''}`)
+      success(`User "${r.user.username}" created (rate ${rate===0?'∞':rate}, ips ${ipLim===0?'∞':ipLim})`)
       setLastKey(r.user.api_key)
-      setFormUser(''); setFormPass(''); setShowCreate(false); setUnlimited(false); setFormRate('100'); load()
+      setFormUser(''); setFormPass(''); setShowCreate(false); setUnlimited(false); setFormRate('100'); setUnlimitedIp(false); setFormIpLimit('5'); load()
     } else error(r.error || 'Failed to create user')
     setCreating(false)
   }
@@ -91,6 +106,14 @@ export default function Users() {
     if (!editRate.unlimited && (rate < 1 || rate > 10000)) { error('Rate must be 1-10000 or unlimited'); return }
     const r = await api.updateUserRateLimit(id, rate)
     if (r.ok) { success(rate===0?'Unlimited enabled':`Rate set to ${rate}`); setEditRate(null); load() }
+    else error(r.error || 'Failed')
+  }
+  const saveIpLimit = async (id: number) => {
+    if (!editIpLimit) return
+    const v = editIpLimit.unlimited ? 0 : (parseInt(editIpLimit.ip) || 0)
+    if (!editIpLimit.unlimited && (v < 1 || v > 100)) { error('IP limit must be 1-100 or unlimited'); return }
+    const r = await api.updateUserIpLimit(id, v)
+    if (r.ok) { success(v===0?'IP unlimited enabled':`IP limit set to ${v}`); setEditIpLimit(null); load() }
     else error(r.error || 'Failed')
   }
 
@@ -131,7 +154,7 @@ export default function Users() {
         <form onSubmit={create} className="card p-5 animate-in" noValidate>
           <h3 className="text-sm font-semibold flex items-center gap-1.5"><FiUserPlus size={14} /> {t('users.createTitle')}</h3>
           <p className="mt-1 text-xs text-[var(--color-ink-3)]">{t('users.createDesc')}</p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-3 items-start">
+          <div className="mt-4 grid gap-4 sm:grid-cols-4 items-start">
             <div className="flex flex-col">
               <label htmlFor="new-username" className="label">{t('users.username')}</label>
               <input id="new-username" value={formUser} onChange={(e) => setFormUser(e.target.value)} placeholder="e.g. johndoe" className="input" required />
@@ -152,6 +175,17 @@ export default function Users() {
                 </label>
               </div>
               <p className="help min-h-[1.25rem]">{unlimited ? t('users.noLimit') : t('users.rateHelp')}</p>
+            </div>
+            <div className="flex flex-col">
+              <label className="label">IP limit</label>
+              <div className="flex items-center gap-2">
+                <input type="number" min={1} max={100} value={formIpLimit} onChange={(e) => setFormIpLimit(e.target.value)} className="input flex-1" disabled={unlimitedIp} placeholder="5" />
+                <label className="inline-flex items-center gap-1 text-xs whitespace-nowrap shrink-0">
+                  <input type="checkbox" checked={unlimitedIp} onChange={(e) => setUnlimitedIp(e.target.checked)} className="rounded" />
+                  <FiZap size={12} /> {t('users.unlimited')}
+                </label>
+              </div>
+              <p className="help min-h-[1.25rem]">{unlimitedIp ? t('users.noLimit') : 'Max IPs per user (0 = unlimited)'}</p>
             </div>
           </div>
           <div className="mt-4 flex justify-end">
@@ -182,7 +216,8 @@ export default function Users() {
                 <tr>
                   <th>User</th>
                   <th>Role</th>
-                  <th>Limit</th>
+                  <th>Rate</th>
+                  <th>IPs</th>
                   <th className="hidden md:table-cell">Created</th>
                   <th className="w-[1%] whitespace-nowrap">Actions</th>
                 </tr>
@@ -205,7 +240,7 @@ export default function Users() {
                     <td>
                       {editRate?.id === u.id ? (
                         <div className="flex items-center gap-1">
-                          <input type="number" value={editRate.rate} onChange={(e) => setEditRate({ ...editRate, rate: e.target.value })} disabled={editRate.unlimited} className="input h-7 w-20 py-1 text-xs" />
+                          <input type="number" value={editRate.rate} onChange={(e) => setEditRate({ ...editRate, rate: e.target.value })} disabled={editRate.unlimited} className="input h-7 w-16 py-1 text-xs" />
                           <label className="inline-flex items-center gap-1 text-xs"><input type="checkbox" checked={editRate.unlimited} onChange={(e) => setEditRate({ ...editRate, unlimited: e.target.checked })} /> <FiZap size={10} /></label>
                           <button onClick={() => saveRate(u.id)} className="btn btn-primary btn-sm h-7 px-2"><FiCheck size={10} /></button>
                           <button onClick={() => setEditRate(null)} className="btn btn-ghost btn-sm h-7 px-2"><FiX size={10} /></button>
@@ -214,6 +249,27 @@ export default function Users() {
                         <span className="inline-flex items-center gap-1 text-xs">
                           {u.rate_limit === 0 ? <span className="badge" style={{ background: 'var(--color-violet-soft)', color: 'var(--color-violet)', borderColor: '#e9d5ff' }}><FiZap size={10} /> Unlimited</span> : `${u.rate_limit}/s`}
                           <button onClick={() => setEditRate({ id: u.id, rate: String(u.rate_limit), unlimited: u.rate_limit === 0 })} className="btn btn-ghost btn-sm h-6 w-6 p-0"><FiEdit3 size={10} /></button>
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {editIpLimit?.id === u.id ? (
+                        <div className="flex items-center gap-1">
+                          <input type="number" value={editIpLimit.ip} onChange={(e) => setEditIpLimit({ ...editIpLimit, ip: e.target.value })} disabled={editIpLimit.unlimited} className="input h-7 w-16 py-1 text-xs" />
+                          <label className="inline-flex items-center gap-1 text-xs"><input type="checkbox" checked={editIpLimit.unlimited} onChange={(e) => setEditIpLimit({ ...editIpLimit, unlimited: e.target.checked })} /> <FiZap size={10} /></label>
+                          <button onClick={() => saveIpLimit(u.id)} className="btn btn-primary btn-sm h-7 px-2"><FiCheck size={10} /></button>
+                          <button onClick={() => setEditIpLimit(null)} className="btn btn-ghost btn-sm h-7 px-2"><FiX size={10} /></button>
+                        </div>
+                      ) : (
+                        <span className="inline-flex flex-col gap-0.5 text-xs">
+                          <span className="inline-flex items-center gap-1">
+                            {u.ip_limit === 0 ? <span className="badge" style={{ background: 'var(--color-violet-soft)', color: 'var(--color-violet)', borderColor: '#e9d5ff' }}><FiZap size={10} /> Unlimited</span> : `${u.ip_limit} max`}
+                            <button onClick={() => setEditIpLimit({ id: u.id, ip: String(u.ip_limit), unlimited: u.ip_limit === 0 })} className="btn btn-ghost btn-sm h-6 w-6 p-0"><FiEdit3 size={10} /></button>
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-ink-3)]">
+                            <FiShield size={10} /> {ipCounts[u.id] ?? 0} used
+                            <Link to="/ips" className="inline-flex items-center gap-0.5 text-[var(--color-brand)] no-underline hover:underline">manage <FiExternalLink size={9} /></Link>
+                          </span>
                         </span>
                       )}
                     </td>

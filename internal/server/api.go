@@ -59,8 +59,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.requireAdmin(s.handleUserDevices)(w, r)
 	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/api-key/regenerate"):
 		s.requireAdmin(s.handleRegenerateAPIKey)(w, r)
-	case strings.HasPrefix(path, "users/"):
-		s.requireAdmin(s.handleDeleteUser)(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/rate-limit"):
+		s.requireAdmin(s.handleUpdateUserRateLimit)(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/ip-limit"):
+		s.requireAdmin(s.handleUpdateUserIpLimit)(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/ips"):
+		s.handleUserIPs(w, r)
 	case path == "devices" && r.Method == http.MethodGet:
 		s.requireAdmin(s.handleAllDevices)(w, r)
 	case path == "me/devices":
@@ -71,8 +75,6 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleMyTraffic(w, r)
 	case path == "traffic" && r.Method == http.MethodGet:
 		s.requireAdmin(s.handleTraffic)(w, r)
-	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/rate-limit"):
-		s.requireAdmin(s.handleUpdateUserRateLimit)(w, r)
 	case path == "public-config":
 		s.handlePublicConfig(w, r)
 	case path == "domain/check":
@@ -89,8 +91,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAllow(w, r)
 	case path == "me/ips":
 		s.handleMyIPs(w, r)
-	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/ips"):
-		s.handleUserIPs(w, r)
+	case strings.HasPrefix(path, "users/"):
+		s.requireAdmin(s.handleDeleteUser)(w, r)
 	case path == "restricted":
 		s.requireAdmin(s.handleRestricted)(w, r)
 	case path == "generate":
@@ -538,6 +540,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		APIKey    string     `json:"api_key"`
 		Role      string     `json:"role"`
 		RateLimit int        `json:"rate_limit"`
+		IpLimit   int        `json:"ip_limit"`
 		CreatedAt time.Time  `json:"created_at"`
 		LastLogin *time.Time `json:"last_login,omitempty"`
 	}
@@ -550,6 +553,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			APIKey:    u.APIKey,
 			Role:      u.Role,
 			RateLimit: u.RateLimit,
+			IpLimit:   u.IpLimit,
 			CreatedAt: u.CreatedAt,
 			LastLogin: u.LastLogin,
 		})
@@ -571,6 +575,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Username  string `json:"username"`
 		Password  string `json:"password"`
 		RateLimit *int   `json:"rate_limit"`
+		IpLimit   *int   `json:"ip_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError("invalid request body"))
@@ -602,9 +607,16 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError("rate_limit too large (max 10000, 0 for unlimited)"))
 			return
 		}
-		// 0 means unlimited
 	}
-	user, err := s.db.CreateUserWithRateLimit(req.Username, req.Password, "user", rateLimit)
+	ipLimit := 3
+	if req.IpLimit != nil {
+		ipLimit = *req.IpLimit
+		if ipLimit < 0 || ipLimit > 100 {
+			writeJSON(w, http.StatusBadRequest, apiError("ip_limit must be 0-100 (0 for unlimited)"))
+			return
+		}
+	}
+	user, err := s.db.CreateUserWithRateLimitAndIpLimit(req.Username, req.Password, "user", rateLimit, ipLimit)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, apiError(err.Error()))
 		return
@@ -613,11 +625,12 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"ok": true,
 		"user": map[string]interface{}{
-			"id":        user.ID,
-			"username":  user.Username,
-			"api_key":   user.APIKey,
-			"role":      user.Role,
+			"id":         user.ID,
+			"username":   user.Username,
+			"api_key":    user.APIKey,
+			"role":       user.Role,
 			"rate_limit": user.RateLimit,
+			"ip_limit":   user.IpLimit,
 		},
 	})
 }
@@ -865,6 +878,49 @@ func (s *Server) handleUpdateUserRateLimit(w http.ResponseWriter, r *http.Reques
 	// clear cached limiter so new limit takes effect
 	s.userLimiters.Delete(id)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "rate_limit": rl, "unlimited": rl == 0})
+}
+
+func (s *Server) handleUpdateUserIpLimit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+		return
+	}
+	prefix := "/api/users/"
+	suffix := "/ip-limit"
+	idStr := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, suffix), prefix)
+	idStr = strings.TrimSuffix(idStr, "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		IpLimit *int `json:"ip_limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IpLimit == nil {
+		writeJSON(w, http.StatusBadRequest, apiError("ip_limit is required"))
+		return
+	}
+	il := *req.IpLimit
+	if il < 0 || il > 100 {
+		writeJSON(w, http.StatusBadRequest, apiError("ip_limit must be 0 (unlimited) to 100"))
+		return
+	}
+	target, err := s.db.GetUserByID(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, apiError("user not found"))
+		return
+	}
+	if err := s.db.UpdateUserIpLimit(id, il); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "ip_limit": il, "unlimited": il == 0})
 }
 
 func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {

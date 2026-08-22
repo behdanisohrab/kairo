@@ -39,6 +39,7 @@ const dicts: Record<Lang, Dict> = {
     'nav.users': 'Users',
     'nav.devices': 'Devices',
     'nav.domains': 'Domains',
+    'nav.ips': 'IPs',
     'nav.traffic': 'Traffic',
     'nav.health': 'Health',
     'nav.dashboard': 'Dashboard',
@@ -291,6 +292,7 @@ const dicts: Record<Lang, Dict> = {
     'nav.users': 'کاربران',
     'nav.devices': 'دستگاه‌ها',
     'nav.domains': 'دامنه‌ها',
+    'nav.ips': 'آی‌پی‌ها',
     'nav.traffic': 'ترافیک',
     'nav.health': 'سلامت',
     'nav.dashboard': 'داشبورد',
@@ -525,7 +527,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem('kairo-lang') as Lang | null
     if (saved === 'fa' || saved === 'en') return saved
     if (navigator.language.startsWith('fa')) return 'fa'
-    return 'fa'
+    return 'en'
   })
 
   const setLang = (l: Lang) => {

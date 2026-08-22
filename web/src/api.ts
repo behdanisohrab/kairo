@@ -7,8 +7,15 @@ export interface UserData {
   api_key: string
   role: string
   rate_limit: number
+  ip_limit: number
   created_at: string
   last_login?: string | null
+}
+export interface UserIP {
+  id: number
+  user_id: number
+  ip: string
+  created_at: string
 }
 
 export interface DeviceData {
@@ -138,10 +145,10 @@ export const api = {
   // Users (admin)
   listUsers: () => safeRequest<UsersResponse>('/users'),
 
-  createUser: (username: string, password: string, rate_limit?: number) =>
+  createUser: (username: string, password: string, rate_limit?: number, ip_limit?: number) =>
     safeRequest<CreateUserResponse>('/users', {
       method: 'POST',
-      body: JSON.stringify({ username: username.trim(), password, rate_limit }),
+      body: JSON.stringify({ username: username.trim(), password, rate_limit, ip_limit }),
     }),
 
   deleteUser: (id: number) =>
@@ -182,6 +189,20 @@ export const api = {
   traffic: () => safeRequest<{ ok: boolean; total_users?: number; total_devices?: number; total_requests?: number; allowlisted?: number; restricted?: number; uptime_seconds?: number; version?: string; recent?: any[]; per_user?: any[]; error?: string }>('/traffic'),
   myTraffic: () => safeRequest<{ ok: boolean; devices?: number; total_requests?: number; recent?: any[]; rate_limit?: number; unlimited?: boolean; error?: string }>('/me/traffic'),
   updateUserRateLimit: (id: number, rate_limit: number) => safeRequest<APIResponse>(`/users/${id}/rate-limit`, { method: 'POST', body: JSON.stringify({ rate_limit }) }),
+  updateUserIpLimit: (id: number, ip_limit: number) => safeRequest<APIResponse>(`/users/${id}/ip-limit`, { method: 'POST', body: JSON.stringify({ ip_limit }) }),
+  myIPs: () => safeRequest<{ ok: boolean; ips?: UserIP[]; limit?: number; count?: number; error?: string }>('/me/ips'),
+  addMyIP: (ip: string) => safeRequest<APIResponse>(`/me/ips?ip=${encodeURIComponent(ip)}`, { method: 'POST' }),
+  removeMyIP: (ip: string) => safeRequest<APIResponse>(`/me/ips?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' }),
+  userIPs: (id: number) => safeRequest<{ ok: boolean; ips?: UserIP[]; limit?: number; count?: number; error?: string }>(`/users/${id}/ips`),
+  addUserIP: (id: number, ip: string) => safeRequest<APIResponse>(`/users/${id}/ips?ip=${encodeURIComponent(ip)}`, { method: 'POST' }),
+  removeUserIP: (id: number, ip: string) => safeRequest<APIResponse>(`/users/${id}/ips?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' }),
+  myIP: async (): Promise<{ ip: string | null }> => {
+    try {
+      const r = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' })
+      const j = (await r.json()) as { ip?: string }
+      return { ip: j.ip ?? null }
+    } catch { return { ip: null } }
+  },
   health: async () => {
     try {
       const res = await fetch('/healthz?detailed=1', { credentials: 'include', headers: { Accept: 'application/json' } })
