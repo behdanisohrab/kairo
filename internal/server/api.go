@@ -197,6 +197,29 @@ func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPost:
+		// Per-user self-add: store per-user first, enforce limit, then ensure global
+		if user.Role != "admin" {
+			if exists, _ := s.db.IsIPAllowlistedForUser(user.ID, ip.String()); exists {
+				writeJSON(w, http.StatusConflict, apiError("IP already allowlisted for you"))
+				return
+			}
+			if user.IpLimit != 0 {
+				cnt, _ := s.db.CountUserIPs(user.ID)
+				if cnt >= user.IpLimit {
+					writeJSON(w, http.StatusForbidden, apiError("IP limit reached"))
+					return
+				}
+			}
+			if err := s.db.AddUserIP(user.ID, ip.String()); err != nil && !strings.Contains(err.Error(), "UNIQUE") {
+				writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+				return
+			}
+			// ensure global allowlist also has it for DNS (union)
+			_, _ = s.st.AddAllowed(ip)
+			writeJSON(w, http.StatusOK, apiMessage("IP allowlisted"))
+			return
+		}
+		// admin: add globally
 		added, err := s.st.AddAllowed(ip)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
@@ -222,7 +245,204 @@ func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, apiError("IP is not allowlisted"))
 			return
 		}
+		// also remove from all per-user tables for completeness (admin delete for all)
+		_, _ = s.db.RemoveUserIPAny(ip.String())
 		writeJSON(w, http.StatusOK, apiMessage("IP removed from allowlist"))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+	}
+}
+
+func (s *Server) handleMyIPs(w http.ResponseWriter, r *http.Request) {
+	user := s.authenticateRequest(r)
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		ips, err := s.db.ListUserIPs(user.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			return
+		}
+		if ips == nil {
+			ips = []database.UserAllowedIP{}
+		}
+		// include limit info
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "ips": ips, "limit": user.IpLimit, "count": len(ips)})
+		return
+	case http.MethodPost:
+		ipParam := r.URL.Query().Get("ip")
+		if ipParam == "" {
+			// try JSON body
+			var req struct{ IP string `json:"ip"` }
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			ipParam = req.IP
+		}
+		if ipParam == "" {
+			writeJSON(w, http.StatusBadRequest, apiError("missing ip"))
+			return
+		}
+		ip := net.ParseIP(ipParam)
+		if ip == nil {
+			writeJSON(w, http.StatusBadRequest, apiError("invalid IP"))
+			return
+		}
+		if ip.IsLoopback() {
+			writeJSON(w, http.StatusBadRequest, apiError("loopback not needed"))
+			return
+		}
+		// check limit
+		if user.IpLimit != 0 {
+			cnt, _ := s.db.CountUserIPs(user.ID)
+			if cnt >= user.IpLimit {
+				writeJSON(w, http.StatusForbidden, apiError("IP limit reached"))
+				return
+			}
+		}
+		if err := s.db.AddUserIP(user.ID, ip.String()); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				writeJSON(w, http.StatusConflict, apiError("IP already added"))
+			} else {
+				writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			}
+			return
+		}
+		// also add to global allowlist for DNS (union)
+		_, _ = s.st.AddAllowed(ip)
+		writeJSON(w, http.StatusOK, apiMessage("IP added"))
+		return
+	case http.MethodDelete:
+		ipParam := r.URL.Query().Get("ip")
+		if ipParam == "" {
+			writeJSON(w, http.StatusBadRequest, apiError("missing ip"))
+			return
+		}
+		ip := net.ParseIP(ipParam)
+		if ip == nil {
+			writeJSON(w, http.StatusBadRequest, apiError("invalid IP"))
+			return
+		}
+		removed, err := s.db.RemoveUserIP(user.ID, ip.String())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			return
+		}
+		if !removed {
+			writeJSON(w, http.StatusNotFound, apiError("IP not found for user"))
+			return
+		}
+		// do not automatically remove from global if other user still has it
+		// check if any user still has this IP
+		if ok, _ := s.db.IsIPAllowlistedAny(ip.String()); !ok {
+			_, _ = s.st.RemoveAllowed(ip)
+		}
+		writeJSON(w, http.StatusOK, apiMessage("IP removed"))
+		return
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+	}
+}
+
+func (s *Server) handleUserIPs(w http.ResponseWriter, r *http.Request) {
+	user := s.authenticateRequest(r)
+	if user == nil || user.Role != "admin" {
+		writeJSON(w, http.StatusForbidden, apiError("admin required"))
+		return
+	}
+	// path: /api/users/:id/ips
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// ["api","users",":id","ips"]
+	if len(parts) < 4 {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid path"))
+		return
+	}
+	id, err := strconv.Atoi(parts[2])
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
+		return
+	}
+	target, err := s.db.GetUserByID(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+		return
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, apiError("user not found"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		ips, err := s.db.ListUserIPs(id)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			return
+		}
+		if ips == nil {
+			ips = []database.UserAllowedIP{}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "ips": ips, "limit": target.IpLimit, "count": len(ips)})
+		return
+	case http.MethodPost:
+		ipParam := r.URL.Query().Get("ip")
+		if ipParam == "" {
+			var req struct{ IP string `json:"ip"` }
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			ipParam = req.IP
+		}
+		if ipParam == "" {
+			writeJSON(w, http.StatusBadRequest, apiError("missing ip"))
+			return
+		}
+		ip := net.ParseIP(ipParam)
+		if ip == nil {
+			writeJSON(w, http.StatusBadRequest, apiError("invalid IP"))
+			return
+		}
+		if target.IpLimit != 0 {
+			cnt, _ := s.db.CountUserIPs(id)
+			if cnt >= target.IpLimit {
+				writeJSON(w, http.StatusForbidden, apiError("user IP limit reached"))
+				return
+			}
+		}
+		if err := s.db.AddUserIP(id, ip.String()); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				writeJSON(w, http.StatusConflict, apiError("IP already exists"))
+			} else {
+				writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			}
+			return
+		}
+		_, _ = s.st.AddAllowed(ip)
+		writeJSON(w, http.StatusOK, apiMessage("IP added for user"))
+		return
+	case http.MethodDelete:
+		ipParam := r.URL.Query().Get("ip")
+		if ipParam == "" {
+			writeJSON(w, http.StatusBadRequest, apiError("missing ip"))
+			return
+		}
+		ip := net.ParseIP(ipParam)
+		if ip == nil {
+			writeJSON(w, http.StatusBadRequest, apiError("invalid IP"))
+			return
+		}
+		removed, err := s.db.RemoveUserIP(id, ip.String())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			return
+		}
+		if !removed {
+			writeJSON(w, http.StatusNotFound, apiError("IP not found"))
+			return
+		}
+		if ok, _ := s.db.IsIPAllowlistedAny(ip.String()); !ok {
+			_, _ = s.st.RemoveAllowed(ip)
+		}
+		writeJSON(w, http.StatusOK, apiMessage("IP removed for user"))
+		return
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
 	}

@@ -3,7 +3,6 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"time"
 )
 
 func (db *DB) ListUserIPs(userID int) ([]UserAllowedIP, error) {
