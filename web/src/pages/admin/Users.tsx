@@ -131,29 +131,31 @@ export default function Users() {
         <form onSubmit={create} className="card p-5 animate-in" noValidate>
           <h3 className="text-sm font-semibold flex items-center gap-1.5"><FiUserPlus size={14} /> {t('users.createTitle')}</h3>
           <p className="mt-1 text-xs text-[var(--color-ink-3)]">{t('users.createDesc')}</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-[1.2fr_1.2fr_0.7fr_auto] sm:items-end">
-            <div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3 items-start">
+            <div className="flex flex-col">
               <label htmlFor="new-username" className="label">{t('users.username')}</label>
-              <input id="new-username" value={formUser} onChange={(e) => setFormUser(e.target.value)} placeholder="e.g. sohrab" className="input" required />
-              {formUser && validateUsername(formUser) && <p className="help text-[var(--color-rose)]">{validateUsername(formUser)}</p>}
+              <input id="new-username" value={formUser} onChange={(e) => setFormUser(e.target.value)} placeholder="e.g. johndoe" className="input" required />
+              <p className="help min-h-[1.25rem] text-[var(--color-rose)]">{formUser ? validateUsername(formUser) || '\u00A0' : '\u00A0'}</p>
             </div>
-            <div>
+            <div className="flex flex-col">
               <label htmlFor="new-password" className="label">{t('users.password')}</label>
               <input id="new-password" type="password" value={formPass} onChange={(e) => setFormPass(e.target.value)} placeholder="Min 6 characters" className="input" required />
-              {formPass && validatePassword(formPass) && <p className="help text-[var(--color-rose)]">{validatePassword(formPass)}</p>}
+              <p className="help min-h-[1.25rem] text-[var(--color-rose)]">{formPass ? validatePassword(formPass) || '\u00A0' : '\u00A0'}</p>
             </div>
-            <div>
+            <div className="flex flex-col">
               <label className="label">{t('users.rateLimit')}</label>
               <div className="flex items-center gap-2">
-                <input type="number" min={1} max={10000} value={formRate} onChange={(e) => setFormRate(e.target.value)} className="input" disabled={unlimited} placeholder="100" />
-                <label className="inline-flex items-center gap-1 text-xs whitespace-nowrap">
+                <input type="number" min={1} max={10000} value={formRate} onChange={(e) => setFormRate(e.target.value)} className="input flex-1" disabled={unlimited} placeholder="100" />
+                <label className="inline-flex items-center gap-1 text-xs whitespace-nowrap shrink-0">
                   <input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} className="rounded" />
-                  <FiZap size={12} /> Unlimited
+                  <FiZap size={12} /> {t('users.unlimited')}
                 </label>
               </div>
-              <p className="help">{unlimited ? 'No rate limit' : 'Requests per second (0 = unlimited)'}</p>
+              <p className="help min-h-[1.25rem]">{unlimited ? t('users.noLimit') : t('users.rateHelp')}</p>
             </div>
-            <button type="submit" disabled={creating} className="btn btn-primary h-[42px] shrink-0">{creating ? t('users.creating') : t('users.createBtn')}</button>
+          </div>
+          <div className="mt-4 flex justify-end">
+            <button type="submit" disabled={creating} className="btn btn-primary px-6 py-2.5">{creating ? t('users.creating') : t('users.createBtn')}</button>
           </div>
         </form>
       )}

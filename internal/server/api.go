@@ -87,6 +87,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.requireAdmin(s.handleRejectDomainRequest)(w, r)
 	case path == "allow":
 		s.handleAllow(w, r)
+	case path == "me/ips":
+		s.handleMyIPs(w, r)
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/ips"):
+		s.handleUserIPs(w, r)
 	case path == "restricted":
 		s.requireAdmin(s.handleRestricted)(w, r)
 	case path == "generate":

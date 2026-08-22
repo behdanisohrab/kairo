@@ -20,8 +20,17 @@ type User struct {
 	APIKey       string
 	Role         string
 	RateLimit    int
+	IpLimit      int
 	CreatedAt    time.Time
 	LastLogin    *time.Time
+}
+
+type UserAllowedIP struct {
+	ID        int       `json:"id"`
+	UserID    int       `json:"user_id"`
+	Username  string    `json:"username,omitempty"`
+	IP        string    `json:"ip"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Session struct {
@@ -94,6 +103,7 @@ func (db *DB) migrate() error {
 			api_key       TEXT UNIQUE NOT NULL,
 			role          TEXT NOT NULL DEFAULT 'user',
 			rate_limit    INTEGER NOT NULL DEFAULT 100,
+			ip_limit      INTEGER NOT NULL DEFAULT 3,
 			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
 			last_login    DATETIME
 		)`,
@@ -137,6 +147,15 @@ func (db *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_requests_status ON domain_requests(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_requests_user ON domain_requests(user_id)`,
+		`CREATE TABLE IF NOT EXISTS user_allowed_ips (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			ip TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(user_id, ip)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_allowed_ips_user ON user_allowed_ips(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_allowed_ips_ip ON user_allowed_ips(ip)`,
 	}
 
 	for _, q := range queries {
@@ -147,8 +166,10 @@ func (db *DB) migrate() error {
 
 	// Add device_type column if missing (migration for existing DBs)
 	if _, err := db.conn.Exec(`ALTER TABLE devices ADD COLUMN device_type TEXT NOT NULL DEFAULT ''`); err != nil {
-		// SQLite doesn't error if column already exists, but we catch just in case
 		slog.Debug("device_type migration: column may already exist", "err", err)
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE users ADD COLUMN ip_limit INTEGER NOT NULL DEFAULT 3`); err != nil {
+		slog.Debug("ip_limit migration: column may already exist", "err", err)
 	}
 
 	slog.Info("database migrated")

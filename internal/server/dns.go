@@ -45,6 +45,21 @@ func (s *Server) serveDNS(w dns.ResponseWriter, req *dns.Msg) {
 // allowlisted client: answer with our own IP and silence IPv6 so the traffic
 // is forced over the SNI router. Everyone else gets the upstream answer, so an
 // unallowlisted client still resolves normally and simply is not routed.
+func isAllowedForIP(s *Server, ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if s.st.IsAllowedIP(ip) {
+		return true
+	}
+	if s.db != nil {
+		if ok, _ := s.db.IsIPAllowlistedAny(ip.String()); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) processQuery(req *dns.Msg, clientIP net.IP) *dns.Msg {
 	if req == nil || len(req.Question) == 0 {
 		s.recordDNS("", "error")
@@ -60,7 +75,7 @@ func (s *Server) processQuery(req *dns.Msg, clientIP net.IP) *dns.Msg {
 		qtype = "TYPE" + strconv.Itoa(int(q.Qtype))
 	}
 
-	if s.st.IsRestricted(name) && s.st.IsAllowedIP(clientIP) {
+	if s.st.IsRestricted(name) && isAllowedForIP(s, clientIP) {
 		switch q.Qtype {
 		case dns.TypeA:
 			s.recordDNS(qtype, "split")
