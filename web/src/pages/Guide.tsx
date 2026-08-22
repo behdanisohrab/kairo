@@ -54,10 +54,12 @@ export default function Guide() {
   const originDefault = typeof window !== 'undefined' ? window.location.origin : 'https://dns.example.com'
   const hostDefault = typeof window !== 'undefined' ? window.location.hostname : 'dns.example.com'
   const [cfgDohUrl, setCfgDohUrl] = useState<string | null>(null)
-  useEffect(() => { api.publicConfig().then(r => { if (r.ok && r.doh_url) setCfgDohUrl(r.doh_url) }).catch(() => {}) }, [])
+  const [vpsIp, setVpsIp] = useState<string | null>(null)
+  useEffect(() => { api.publicConfig().then(r => { if (r.ok && r.doh_url) setCfgDohUrl(r.doh_url); if (r.ok && r.vps_ip) setVpsIp(r.vps_ip) }).catch(() => {}) }, [])
   const origin = cfgDohUrl ? cfgDohUrl.replace(/\/dns-query\/?$/, '') : originDefault
   const dohUrl = cfgDohUrl || `${originDefault}/dns-query`
   const host = (() => { try { return new URL(dohUrl).hostname } catch { return hostDefault } })()
+  const displayVpsIp = vpsIp || 'YOUR_VPS_IP'
   const [platform, setPlatform] = useState<'windows' | 'mac' | 'linux' | 'android' | 'ios' | 'firefox' | 'chrome'>('windows')
   const [search, setSearch] = useState('')
 
@@ -183,8 +185,9 @@ export default function Guide() {
         </div>
         <div className="card p-3 sm:p-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-4)] flex items-center gap-1"><FiServer size={12} /> {t('guide.dohEndpoint')}</div>
-          <div className="mt-2"><Code title="URL">{dohUrl}</Code></div>
-          <p className="help">{t('guide.dohDesc', { host })}</p>
+          <div className="mt-2"><Code title="DoH URL">{dohUrl}</Code></div>
+          <div className="mt-3"><Code title={t('guide.plainDns')}>{displayVpsIp}</Code></div>
+          <p className="help">{t('guide.dohDesc', { host, vps_ip: displayVpsIp })}</p>
         </div>
       </div>
 

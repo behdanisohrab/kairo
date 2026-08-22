@@ -178,7 +178,7 @@ export const api = {
   listDomainRequests: () => safeRequest<{ ok: boolean; requests?: DomainRequest[]; error?: string }>('/domain/requests'),
   approveDomainRequest: (id: number) => safeRequest<APIResponse>(`/domain/requests/${id}/approve`, { method: 'POST' }),
   rejectDomainRequest: (id: number) => safeRequest<APIResponse>(`/domain/requests/${id}/reject`, { method: 'POST' }),
-  publicConfig: () => safeRequest<{ ok: boolean; admin_url?: string; doh_url?: string; host?: string; error?: string }>('/public-config'),
+  publicConfig: () => safeRequest<{ ok: boolean; admin_url?: string; doh_url?: string; host?: string; vps_ip?: string; error?: string }>('/public-config'),
   status: () =>
     safeRequest<
       APIResponse & {

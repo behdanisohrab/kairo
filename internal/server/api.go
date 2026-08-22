@@ -498,6 +498,7 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		"admin_url": s.cfg.EffectiveAdminURL(),
 		"doh_url":   s.cfg.EffectiveDoHURL(),
 		"host":      s.cfg.Host,
+		"vps_ip":    s.cfg.VPSIP,
 	})
 }
 
