@@ -18,15 +18,50 @@ export interface UserIP {
   created_at: string
 }
 
-export interface DeviceData {
+export interface ConnectionLogData {
   id: number
   ip: string
-  ja3_hash: string
-  user_agent: string
-  device_type: string
-  first_seen: string
-  last_seen: string
+  user_id?: number | null
+  username?: string
+  domain: string
+  created_at: string
+}
+
+export interface TrafficBucket {
+  bucket: string
+  count: number
+}
+
+export interface NameCount {
+  name: string
+  count: number
+}
+
+export interface AdminTrafficResponse extends APIResponse {
+  range_hours?: number
+  total_users?: number
+  connections?: number
+  unique_ips?: number
+  allowlisted?: number
+  restricted?: number
+  direct?: number
+  uptime_seconds?: number
+  version?: string
+  buckets?: TrafficBucket[]
+  top_domains?: NameCount[]
+  top_users?: NameCount[]
+  recent?: ConnectionLogData[]
+}
+
+export interface UserTrafficResponse extends APIResponse {
   user_id?: number
+  range_hours?: number
+  total_requests?: number
+  unique_domains?: number
+  buckets?: TrafficBucket[]
+  recent?: ConnectionLogData[]
+  rate_limit?: number
+  unlimited?: boolean
 }
 
 export interface APIResponse {
@@ -42,9 +77,6 @@ export interface MeResponse extends APIResponse {
 }
 export interface UsersResponse extends APIResponse {
   users?: UserData[]
-}
-export interface DevicesResponse extends APIResponse {
-  devices?: DeviceData[]
 }
 export interface CreateUserResponse extends APIResponse {
   user?: UserData
@@ -154,9 +186,6 @@ export const api = {
   deleteUser: (id: number) =>
     safeRequest<APIResponse>(`/users/${id}`, { method: 'DELETE' }),
 
-  getUserDevices: (id: number) =>
-    safeRequest<DevicesResponse>(`/users/${id}/devices`),
-
   regenerateAPIKey: (id: number) =>
     safeRequest<RegenerateKeyResponse>(`/users/${id}/api-key/regenerate`, {
       method: 'POST',
@@ -166,10 +195,6 @@ export const api = {
     safeRequest<RegenerateKeyResponse>('/me/api-key/regenerate', {
       method: 'POST',
     }),
-
-  // Devices
-  allDevices: () => safeRequest<DevicesResponse>('/devices'),
-  myDevices: () => safeRequest<DevicesResponse>('/me/devices'),
 
   // Legacy / status (admin)
   allowList: () => safeRequest<{ ok: boolean; data?: string[]; error?: string }>('/allow'),
@@ -191,8 +216,10 @@ export const api = {
   approveDomainRequest: (id: number) => safeRequest<APIResponse>(`/domain/requests/${id}/approve`, { method: 'POST' }),
   rejectDomainRequest: (id: number) => safeRequest<APIResponse>(`/domain/requests/${id}/reject`, { method: 'POST' }),
   publicConfig: () => safeRequest<{ ok: boolean; admin_url?: string; doh_url?: string; host?: string; vps_ip?: string; error?: string }>('/public-config'),
-  traffic: () => safeRequest<{ ok: boolean; total_users?: number; total_devices?: number; total_requests?: number; allowlisted?: number; restricted?: number; uptime_seconds?: number; version?: string; recent?: any[]; per_user?: any[]; error?: string }>('/traffic'),
-  myTraffic: () => safeRequest<{ ok: boolean; devices?: number; total_requests?: number; recent?: any[]; rate_limit?: number; unlimited?: boolean; error?: string }>('/me/traffic'),
+  traffic: (range: string = '24h') =>
+    safeRequest<AdminTrafficResponse>(`/traffic?range=${encodeURIComponent(range)}`),
+  myTraffic: (range: string = '24h') =>
+    safeRequest<UserTrafficResponse>(`/me/traffic?range=${encodeURIComponent(range)}`),
   updateUserRateLimit: (id: number, rate_limit: number) => safeRequest<APIResponse>(`/users/${id}/rate-limit`, { method: 'POST', body: JSON.stringify({ rate_limit }) }),
   updateUserIpLimit: (id: number, ip_limit: number) => safeRequest<APIResponse>(`/users/${id}/ip-limit`, { method: 'POST', body: JSON.stringify({ ip_limit }) }),
   myIPs: () => safeRequest<{ ok: boolean; ips?: UserIP[]; limit?: number; count?: number; error?: string }>('/me/ips'),

@@ -12,14 +12,10 @@ import { FiAlertCircle } from 'react-icons/fi'
 const Login = lazy(() => import('./pages/Login'))
 const AdminOverview = lazy(() => import('./pages/admin/Overview'))
 const Users = lazy(() => import('./pages/admin/Users'))
-const UserDevices = lazy(() => import('./pages/admin/UserDevices'))
-const AllDevices = lazy(() => import('./pages/admin/AllDevices'))
 const Domains = lazy(() => import('./pages/admin/Domains'))
 const Traffic = lazy(() => import('./pages/Traffic'))
-const Health = lazy(() => import('./pages/Health'))
 const UserDashboard = lazy(() => import('./pages/user/Dashboard'))
 const Guide = lazy(() => import('./pages/Guide'))
-const Ips = lazy(() => import('./pages/Ips'))
 
 // ── Auth context ────────────────────────────────────────────────────
 interface AuthCtx {
@@ -143,14 +139,13 @@ function AppRoutes() {
               <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
               <Route path="/admin" element={<Guard admin><Layout><AdminOverview /></Layout></Guard>} />
               <Route path="/admin/users" element={<Guard admin><Layout><Users /></Layout></Guard>} />
-              <Route path="/admin/users/:id/devices" element={<Guard admin><Layout><UserDevices /></Layout></Guard>} />
-              <Route path="/admin/devices" element={<Guard admin><Layout><AllDevices /></Layout></Guard>} />
               <Route path="/admin/domains" element={<Guard admin><Layout><Domains /></Layout></Guard>} />
               <Route path="/traffic" element={<Guard><Layout><Traffic /></Layout></Guard>} />
-              <Route path="/health" element={<Guard><Layout><Health /></Layout></Guard>} />
               <Route path="/dashboard" element={<Guard><Layout><UserDashboard /></Layout></Guard>} />
               <Route path="/guide" element={<Guard><Layout><Guide /></Layout></Guard>} />
-              <Route path="/ips" element={<Guard><Layout><Ips /></Layout></Guard>} />
+              {/* legacy routes → merged homes */}
+              <Route path="/ips" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/health" element={<Navigate to={user?.role === 'admin' ? '/admin' : '/dashboard'} replace />} />
               <Route
                 path="/"
                 element={

@@ -5,7 +5,7 @@ import type { UserData } from '../../api'
 import { useToast } from '../../components/ui/Toast'
 import { ConfirmModal, Modal } from '../../components/ui/Modal'
 import { useI18n } from '../../lib/i18n'
-import { FiSearch, FiPlus, FiTrash2, FiKey, FiSmartphone, FiCopy, FiCheck, FiX, FiUserPlus, FiZap, FiEdit3, FiShield, FiExternalLink } from 'react-icons/fi'
+import { FiSearch, FiPlus, FiTrash2, FiKey, FiCopy, FiCheck, FiX, FiUserPlus, FiZap, FiEdit3, FiShield, FiExternalLink } from 'react-icons/fi'
 
 function validateUsername(v: string) {
   if (v.length < 3) return 'At least 3 characters'
@@ -276,7 +276,6 @@ export default function Users() {
                     <td className="hidden md:table-cell text-xs text-[var(--color-ink-3)]">{new Date(u.created_at).toLocaleDateString()}</td>
                     <td>
                       <div className="flex flex-wrap gap-1.5 justify-end">
-                        <Link to={`/admin/users/${u.id}/devices`} className="btn btn-outline btn-sm no-underline inline-flex items-center gap-1"><FiSmartphone size={12} /> Devices</Link>
                         <button onClick={() => setRegenTarget(u)} className="btn btn-outline btn-sm inline-flex items-center gap-1"><FiKey size={12} /> Regen</button>
                         <button onClick={() => setDeleteTarget(u)} disabled={u.role === 'admin'} className="btn btn-danger btn-sm inline-flex items-center gap-1"><FiTrash2 size={12} /> {t('common.delete')}</button>
                       </div>
