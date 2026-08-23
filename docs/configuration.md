@@ -115,8 +115,8 @@ next one when a resolver fails or times out, so two independent resolvers make
 the service more resilient.
 
 The `data_dir` path is where runtime state lives. It holds `kairo.db` (users,
-sessions, devices, `domain_requests`) plus the three plain text policy files.
-The directory is created if it does not exist.
+sessions, `connection_logs`, `domain_requests`) plus the three plain text
+policy files. The directory is created if it does not exist.
 
 The `ip_source` section controls the automatic allowlist generator. Its
 `domains_file` is a plain text file listing the domains whose addresses should
@@ -203,16 +203,20 @@ the limit receive a `429` response.
 ## The data directory
 
 The data directory holds the SQLite database `kairo.db` (users, sessions with
-`expires_at > now`, devices `ip+ja3_hash`, `connection_logs`, `domain_requests`
-`pending/approved/rejected`, and the per-user client allowlist in
-`user_allowed_ips`) plus two plain text files. Each file is read on startup and
-on every change, ignoring blank lines and lines that start with `#`.
+`expires_at > now`, `connection_logs` `(ip, user_id, domain)` pruned after 30
+days, `domain_requests` `pending/approved/rejected`, and the per-user client
+allowlist in `user_allowed_ips`) plus three plain text files. Each file is read
+on startup and on every change, ignoring blank lines and lines that start with
+`#`.
 
 `domains.txt` lists restricted domains, one per line; restricting `youtube.com`
-also covers `www.youtube.com`. `domain.txt` is the input for the IP generator
-named by `ip_source.domains_file`; generated addresses are stored in the
-database under the admin account and take effect immediately. Both files are
-written atomically and watched every 5s for hot-reload.
+also covers `www.youtube.com`. `direct.txt` lists restricted domains answered
+with **real upstream IPs** instead of the VPS IP — use it for names whose
+connection is killed mid-tunnel by external filtering (SNI kills) but which
+load fine when connected directly. `domain.txt` is the input for the IP
+generator named by `ip_source.domains_file`; generated addresses are stored in
+the database under the admin account and take effect immediately. All three
+files are written atomically and watched every 5s for hot-reload.
 
 Client IPs are managed from the web panel or via `POST/DELETE /api/allow`,
 which stores them on the authenticated user's account. A leftover

@@ -51,9 +51,11 @@ Open `config.yaml` and set the values that matter:
 - The TLS paths can stay if you plan to use the default certificate location, or change them to wherever you store certificates. Alternatively set `acme.email` for automatic Let's Encrypt via `http-01`.
 
 The policy files live in `data` next to the configuration (plus `kairo.db` for
-users/sessions/devices/requests). `domains.txt` holds the restricted domains,
-one entry per line, ignoring blank lines and lines starting with `#`. Client
-IPs are no longer file-based: add them from the web panel or with
+users/sessions/requests). `domains.txt` holds the restricted domains and
+`direct.txt` the restricted names answered with real upstream IPs instead of
+the VPS tunnel, one entry per line, ignoring blank lines and lines starting
+with `#`. Both are editable from the panel's Domains page tabs. Client IPs are
+not file-based: add them from the web panel or with
 `POST /api/allow?ip=<address>` using your API key — each IP is stored on your
 own account. (A 0.2.x-era `allowed.txt` is imported into the admin account on
 first start and renamed to `allowed.txt.legacy`.) Start with whatever domains
@@ -178,8 +180,9 @@ nslookup example.com <vps-ip>
 The restricted name should answer with the VPS IP. The normal name should
 answer with its real address. If a restricted name still shows the real
 address, the client IP is not in the allowlist yet, or the client is not using
-this server for DNS. Check `GET /api/allow` and the device list in the dashboard
-(`JA3` + `device_type` via `POST /api/me/devices`).
+this server for DNS. Check `GET /api/allow` and the Traffic page. If a site
+answers but then never loads, its name may be SNI-killed on the client's path:
+add it to the Direct list (`direct.txt`) so DNS hands out real addresses.
 
 ## What is next
 

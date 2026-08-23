@@ -1,6 +1,6 @@
 # Kairo API reference
 
-Kairo exposes a JSON API for auth, users, devices, allowlist, restricted
+Kairo exposes a JSON API for auth, users, allowlist, restricted/direct
 domains, and domain requests. It is served over the SNI router at
 `https://<host>/api/...` (requires TLS with SNI=`host`), and over the loopback
 HTTP backend at `http://127.0.0.1:8080/api/...` (plain HTTP, no SNI needed;
@@ -110,19 +110,25 @@ curl -X POST -H "Authorization: Bearer <admin>" https://dns.example.com/api/user
 # → {ok:true, api_key:"..."}
 ```
 
-### GET /api/users/:id/devices
-Devices for a user via `connection_logs` join, `ORDER BY last_seen DESC`.
+## Traffic analytics
 
-## Devices
+Device tracking was removed (unreliable JA3+IP rows); every tunnelled
+connection is logged as `(ip, user_id, domain)` and attributed to the account
+that allowlisted the source IP. Rows older than 30 days are pruned hourly.
 
-### GET /api/devices  (admin)
-All devices `ORDER BY last_seen DESC`.
+### GET /api/traffic?range=24h  (admin)
+`range` accepts `1h`, `24h` (default), `7d`, `30d`. Returns
+`{connections, unique_ips, buckets:[{bucket,count}] (hourly UTC),
+top_domains:[{name,count}], top_users:[{name,count}], recent:[...],
+allowlisted, restricted, direct, total_users, uptime_seconds, version}`.
 
-### GET /api/me/devices  (any auth)
-Devices for the authenticated user.
+### GET /api/me/traffic?range=24h  (any auth)
+Caller-scoped: `{total_requests, unique_domains, buckets, recent,
+rate_limit, unlimited}`.
 
-Device shape: `{id, ip, ja3_hash, user_agent, device_type, first_seen, last_seen}`.
-`device_type` classified from `User-Agent` (`Bot`/`Android`/`iOS`/`Desktop`/`Tablet`/`Unknown`/`Other`), `UNIQUE(ip, ja3_hash)` with `ON CONFLICT DO UPDATE last_seen`.
+The removed device endpoints answer **410 Gone** with a pointer to
+`/api/traffic`: `GET /api/devices`, `GET /api/me/devices`,
+`GET /api/users/:id/devices`.
 
 ### POST /api/me/api-key/regenerate  (any auth)
 Regenerates the caller's own API key.
@@ -160,6 +166,22 @@ Sorted `domains.txt` (subdomains covered: `youtube.com` matches `www.youtube.com
 
 ### DELETE /api/restricted?domain=instagram.com  (admin)
 `404` if not present.
+
+## Direct-mode domains
+
+Restricted names listed here are answered with real upstream records instead
+of the VPS IP — for sites whose connection is killed mid-tunnel by external
+filtering but load fine when connected directly. Stored in `data/direct.txt`,
+parent matching applies (`youtube.com` covers `www.youtube.com`).
+
+### GET /api/direct  (admin)
+Sorted direct-mode list.
+
+### POST /api/direct?domain=youtube.com  (admin)
+`409` if already direct, `400` if empty. Takes effect immediately (hot-reload).
+
+### DELETE /api/direct?domain=youtube.com  (admin)
+Returns the name to tunnelled answering; `404` if not present.
 
 ## Domain check and requests
 
@@ -212,4 +234,4 @@ Admin only. Returns `version`, `host`, `admin_url`, `doh_url`, `vps_ip`, `uptime
 
 ## Web UI
 
-The UI is built with `bun` (`oven/bun:1-alpine` in Docker, `web/bun.lock`), Vite 8, React 19, Tailwind 4, `react-icons`. Routes: `/login`, `/admin` (Overview), `/admin/users`, `/admin/users/:id/devices`, `/admin/devices`, `/admin/domains`, `/dashboard`, `/guide`. Features: light/dark (`system`), EN/FA RTL (`Vazirmatn`), responsive minimal design, domain/IP management (hot-reload), user domain checker (`/api/domain/check` + request).
+The UI is built with `bun` (`oven/bun:1-alpine` in Docker, `web/bun.lock`), Vite 8, React 19, Tailwind 4, `react-icons`. Routes: `/login`, `/admin` (Overview with system status), `/admin/users`, `/admin/domains` (Tunnelled/Direct tabs), `/traffic` (charts + sortable top tables, both roles), `/dashboard`, `/guide`. Features: light/dark (`system`), EN/FA RTL (`Vazirmatn`), responsive minimal design, domain/IP management (hot-reload), user domain checker (`/api/domain/check` + request).

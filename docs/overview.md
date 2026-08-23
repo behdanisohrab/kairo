@@ -55,16 +55,17 @@ for your hostname and the transparent tunnel for restricted domains. A separate
 loopback listener on port 9090 serves the Prometheus `/metrics` endpoint so it
 is never exposed publicly. The web UI (built with `bun` + Vite 8, React 19,
 Tailwind 4, `react-icons`, persisted in `web/dist` and served as SPA fallback)
-adds login, dashboards, device tracking (`JA3` + `User-Agent` classification),
-and management for users, devices, and domains.
+adds login, dashboards, connection analytics, and management for users and
+domains.
 
 All policy lives in a data directory as one SQLite database `kairo.db` (users
 with `bcrypt` passwords and `hex(32)` API keys, sessions with `expires_at`,
-devices `UNIQUE(ip,ja3_hash)` + `connection_logs`, `domain_requests`
-`pending/approved/rejected`, and the per-user client allowlist in
-`user_allowed_ips`) plus two plain text files (`domains.txt` and `domain.txt`
-for the IP generator). Kairo watches the text files and applies edits without
-a restart, and every change made through the API is written back atomically.
+`connection_logs` `(ip, user_id, domain)` pruned after 30 days,
+`domain_requests` `pending/approved/rejected`, and the per-user client
+allowlist in `user_allowed_ips`) plus plain text files (`domains.txt`,
+`direct.txt`, and `domain.txt` for the IP generator). Kairo watches the text
+files and applies edits without a restart, and every change made through the
+API is written back atomically.
 The 0.2.x-era `allowed.txt` is retired: on first start its IPs are imported
 into the admin account and the file is renamed to `allowed.txt.legacy`.
 
@@ -77,16 +78,20 @@ Docker, built via `bun install --frozen-lockfile && bun run build` in the
 - **Auth**: `POST /api/auth/login` → `kairo_session` cookie (`HttpOnly`,
   `SameSite=Lax`, `Secure` when TLS/`X-Forwarded-Proto:https`, hourly purge),
   fallback `Authorization: Bearer <key>` / `X-API-Key` / `?key=` (constant-time).
-- **Dashboards**: admin Overview (users/devices/health), user Dashboard (API key
-  reveal/copy/regenerate, devices, **Check a domain** → `GET /api/domain/check`
+- **Dashboards**: admin Overview (users, 24h connections, system status with
+  db/version/host badge), user Dashboard (API key reveal/copy/regenerate,
+  **My IPs** card, **Check a domain** → `GET /api/domain/check`
   + `POST /api/domain/request` if not proxied).
 - **Management**: `Admin → Users` (create `^[a-zA-Z0-9._-]{3,32}`, password
   `6-128`, `rate_limit` capped, delete atomic with sessions/requests, regen key),
-  `Admin → Devices` (filter/sort/pagination), `Admin → Domains` (single/bulk
-  add → hot-reload `domains.txt`, delete, pending `Approve`/`Reject` queue).
+  `Admin → Domains` (Tunnelled/Direct tabs: single/bulk add → hot-reload,
+  delete, pending `Approve`/`Reject` queue).
+- **Traffic** (`/traffic`, both roles): hourly connections chart, sortable top
+  domains/users, recent feed, 24h/7d/30d range switcher.
 - **Guide**: bilingual EN/FA (RTL `Vazirmatn`), light/dark `system` default,
   platform steps for Windows/macOS/Linux/Android/iOS/Firefox/Chrome, IP
-  whitelisting docs, `curl` for `application/dns-message` and `GET /api/me/devices`,
+  whitelisting docs, `curl` for `application/dns-message` and
+  `GET /api/me/traffic?range=7d`,
   `doh_url`/`admin_url` from `GET /api/public-config` (or `host` fallback).
 
 ## Two routing decisions
