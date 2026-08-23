@@ -179,6 +179,11 @@ export const api = {
     safeRequest<{ ok: boolean; data?: string[]; error?: string }>('/restricted'),
   addRestricted: (domain: string) => safeRequest<APIResponse>(`/restricted?domain=${encodeURIComponent(domain)}`, { method: 'POST' }),
   removeRestricted: (domain: string) => safeRequest<APIResponse>(`/restricted?domain=${encodeURIComponent(domain)}`, { method: 'DELETE' }),
+
+  directList: () =>
+    safeRequest<{ ok: boolean; data?: string[]; error?: string }>('/direct'),
+  addDirect: (domain: string) => safeRequest<APIResponse>(`/direct?domain=${encodeURIComponent(domain)}`, { method: 'POST' }),
+  removeDirect: (domain: string) => safeRequest<APIResponse>(`/direct?domain=${encodeURIComponent(domain)}`, { method: 'DELETE' }),
   // Domain check / request (new)
   checkDomain: (domain: string) => safeRequest<{ ok: boolean; restricted?: boolean; error?: string }>(`/domain/check?domain=${encodeURIComponent(domain)}`),
   requestDomain: (domain: string) => safeRequest<APIResponse>('/domain/request', { method: 'POST', body: JSON.stringify({ domain }) }),
