@@ -68,7 +68,7 @@ which the allowlist depends on, and so they can bind the privileged ports.
 ## Manual build
 
 ```bash
-go build -ldflags="-X kairo/internal/version.Version=0.3.1" -o kairo ./cmd/kairo
+go build -ldflags="-X kairo/internal/version.Version=0.3.2" -o kairo ./cmd/kairo
 ./kairo generate config configs
 ./kairo run --config configs/config.yaml
 ```
