@@ -1,11 +1,12 @@
 # Kairo configuration — a single YAML file for runtime settings.
 # Copy this to config.yaml, fill in your values, then run: kairo run
 #
-# The routing policy lives in separate plain-text files under data_dir:
-#   allowed.txt   - client IPs allowed to be split-routed
+# The routing policy lives under data_dir:
 #   domains.txt   - restricted domains (subdomains covered automatically)
 #   domain.txt    - ip_source domains the allowlist generator resolves
-# These are edited through the API (/api/allow, /api/restricted) or by hand.
+# Client IPs are stored in the database (kairo.db) and managed from the web
+# panel or the API (/api/allow). A leftover allowed.txt from 0.2.x is imported
+# into the admin account once on startup and renamed to allowed.txt.legacy.
 
 # Public hostname for DoH and the API (matched via SNI).
 host: dns.example.com

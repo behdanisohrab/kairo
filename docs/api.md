@@ -129,14 +129,26 @@ Regenerates the caller's own API key.
 
 ## Managing the allowlist
 
+The client allowlist lives in the database (`user_allowed_ips`), one set of
+rows per user; DNS and SNI gate on the union of all users' IPs. `allowed.txt`
+from 0.2.x is imported into the admin account once at startup and retired as
+`allowed.txt.legacy`.
+
 ### GET /api/allow  (admin)
-Sorted `allowed.txt`.
+Sorted union of all users' allowlisted IPs.
 
-### POST /api/allow?ip=1.2.3.4  (admin)
-`net.ParseIP` validated, loopback rejected, `409` if already, `saveAllowed()` atomically writes `allowed.txt`.
+### POST /api/allow?ip=1.2.3.4  (any auth)
+Stored on the **calling account** — whoever authenticates (session cookie or
+API key) owns the entry, so panel and API stay in sync. `net.ParseIP`
+validated, loopback rejected, `409` if already on your account, `403` when a
+non-admin hits their `ip_limit`. Takes effect for DNS/SNI immediately.
 
-### DELETE /api/allow?ip=1.2.3.4  (admin)
-`404` if not present.
+### DELETE /api/allow?ip=1.2.3.4  (any auth)
+Removes the IP from the calling account (`404` if not present there). The
+global gate keeps routing it until the last owner removes it.
+
+Per-user management endpoints: `GET/POST/DELETE /api/me/ips`,
+`GET/POST/DELETE /api/users/:id/ips` (admin).
 
 ## Managing the restricted list
 

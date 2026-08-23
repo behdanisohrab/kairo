@@ -172,9 +172,12 @@ origins are set on every response. Expired sessions are purged hourly.
 ## Backups and recovery
 
 Everything that matters is in the `config.yaml` file and the `data` directory
-with `kairo.db` and `allowed.txt`, `domains.txt`, `domain.txt`. A nightly copy
-of these is a complete backup. The files are written atomically, so a copy
-taken at any moment is either the old or the new version.
+with `kairo.db` and `domains.txt`, `domain.txt`. A nightly copy of these is a
+complete backup — the client allowlist lives inside `kairo.db`
+(`user_allowed_ips`), so the database is what protects your users' IPs. The
+files are written atomically, so a copy taken at any moment is either the old
+or the new version. An `allowed.txt.legacy` in the data directory is a 0.2.x
+relic kept for reference only; it needs no backup.
 
 ## Routine maintenance
 

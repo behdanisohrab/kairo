@@ -204,15 +204,24 @@ the limit receive a `429` response.
 
 The data directory holds the SQLite database `kairo.db` (users, sessions with
 `expires_at > now`, devices `ip+ja3_hash`, `connection_logs`, `domain_requests`
-`pending/approved/rejected`) plus three plain text files. Each file is read on
-startup and on every change, ignoring blank lines and lines that start with `#`.
+`pending/approved/rejected`, and the per-user client allowlist in
+`user_allowed_ips`) plus two plain text files. Each file is read on startup and
+on every change, ignoring blank lines and lines that start with `#`.
 
-`domains.txt` lists restricted domains, one per line. Restricting `youtube.com`
-also covers `www.youtube.com`. `allowed.txt` lists client IP addresses, one per
-line. Loopback addresses are always allowed. `domain.txt` is the input for the IP
-generator named by `ip_source.domains_file`. All are written atomically and
-watched every 5s for hot-reload; `POST /api/restricted?domain=` etc. write
-through the same path and take effect immediately.
+`domains.txt` lists restricted domains, one per line; restricting `youtube.com`
+also covers `www.youtube.com`. `domain.txt` is the input for the IP generator
+named by `ip_source.domains_file`; generated addresses are stored in the
+database under the admin account and take effect immediately. Both files are
+written atomically and watched every 5s for hot-reload.
+
+Client IPs are managed from the web panel or via `POST/DELETE /api/allow`,
+which stores them on the authenticated user's account. A leftover
+`allowed.txt` from 0.2.x is imported into the admin account once on startup
+and renamed to `allowed.txt.legacy`; Kairo no longer reads it.
+
+> **Legacy note:** up to 0.2.x the allowlist lived in `data/allowed.txt`.
+> Since 0.3 that file is dead weight — kept only as `allowed.txt.legacy` for
+> reference and safe to delete.
 
 ## Command line subcommands
 

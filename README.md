@@ -102,11 +102,14 @@ essential fields are:
 | `vps_ip` | Public IP of this server, returned for restricted domains. |
 | `api_key` | Shared secret required by every `/api/*` call. |
 | `upstream_dns` | Recursive resolvers for non-split queries. |
-| `data_dir` | Directory holding the policy files `allowed.txt` and `domains.txt`. |
-| `ip_source` | Optional generator that turns a `domain.txt` file into allowlisted IPs. |
+| `data_dir` | Directory holding `kairo.db` (users, per-user IP allowlist) and the policy files `domains.txt`. |
+| `ip_source` | Optional generator that turns a `domain.txt` file into allowlisted IPs stored on the admin account. |
 
-The policy files are plain text, one entry per line, and can be edited by hand.
-Subdomains of a restricted domain are covered automatically.
+The restricted-domains file is plain text, one entry per line, and can be edited by hand.
+Subdomains of a restricted domain are covered automatically. Client IPs live in the
+database and are managed from the web panel or `POST /api/allow?ip=`; an old
+`allowed.txt` from 0.2.x is imported into the admin account once at startup and renamed to
+`allowed.txt.legacy`.
 
 ## Client setup
 

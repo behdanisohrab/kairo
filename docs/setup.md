@@ -51,10 +51,13 @@ Open `config.yaml` and set the values that matter:
 - The TLS paths can stay if you plan to use the default certificate location, or change them to wherever you store certificates. Alternatively set `acme.email` for automatic Let's Encrypt via `http-01`.
 
 The policy files live in `data` next to the configuration (plus `kairo.db` for
-users/sessions/devices/requests). `domains.txt` holds the restricted domains
-and `allowed.txt` holds the client IPs you trust. Both accept one entry per
-line and ignore blank lines and lines starting with `#`. Start with whatever
-domains you actually need routed.
+users/sessions/devices/requests). `domains.txt` holds the restricted domains,
+one entry per line, ignoring blank lines and lines starting with `#`. Client
+IPs are no longer file-based: add them from the web panel or with
+`POST /api/allow?ip=<address>` using your API key — each IP is stored on your
+own account. (A 0.2.x-era `allowed.txt` is imported into the admin account on
+first start and renamed to `allowed.txt.legacy`.) Start with whatever domains
+you actually need routed.
 
 ## Build the frontend (if building outside Docker)
 
@@ -118,12 +121,12 @@ curl -k --resolve dns.example.com:8443:127.0.0.1 \
 # login at https://dns.example.com/login → Dashboard copies Bearer key
 ```
 
-For several clients, list their addresses in `data/allowed.txt` instead and let
-the service reload the file on its own (watched every 5s). If your clients have
-stable names, put those names in `data/domain.txt` and either run `kairo gen-ips`
-once or set `ip_source.interval` so the allowlist follows them automatically.
-Each `POST /api/allow` writes atomically to `allowed.txt` and takes effect
-immediately.
+For several clients, call `POST /api/allow` with each client's own API key (or
+add the IP from the panel's IP Management page); every IP is stored on the
+account that made the call and takes effect immediately. If your clients have
+stable names, put those names in `data/domain.txt` and either run `kairo
+gen-ips` once or set `ip_source.interval` so generated addresses are added to
+the admin account automatically.
 
 The Guide in the web UI (EN/FA, dark/light) also documents whitelisting with
 `curl -4 ifconfig.me` and `GET /api/allow` verify.

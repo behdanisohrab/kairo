@@ -61,10 +61,12 @@ and management for users, devices, and domains.
 All policy lives in a data directory as one SQLite database `kairo.db` (users
 with `bcrypt` passwords and `hex(32)` API keys, sessions with `expires_at`,
 devices `UNIQUE(ip,ja3_hash)` + `connection_logs`, `domain_requests`
-`pending/approved/rejected`) plus three plain text files (`domains.txt`,
-`allowed.txt`, `domain.txt` for the IP generator). Kairo watches the text files
-and applies edits without a restart, and every change made through the API is
-written back atomically.
+`pending/approved/rejected`, and the per-user client allowlist in
+`user_allowed_ips`) plus two plain text files (`domains.txt` and `domain.txt`
+for the IP generator). Kairo watches the text files and applies edits without
+a restart, and every change made through the API is written back atomically.
+The 0.2.x-era `allowed.txt` is retired: on first start its IPs are imported
+into the admin account and the file is renamed to `allowed.txt.legacy`.
 
 ## Web admin panel
 
