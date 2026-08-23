@@ -37,6 +37,7 @@ func GenerateConfigs(args []string) error {
 		"config.yaml":                        "",
 		filepath.Join("data", "domains.txt"): "# Restricted domains, one per line. Subdomains are covered automatically.\n",
 		filepath.Join("data", "domain.txt"):  "# Domains whose addresses should be allowlisted. Run 'kairo gen-ips' after editing.\n",
+		filepath.Join("data", "direct.txt"):  "# Restricted domains answered with real upstream IPs instead of the tunnel.\n# Use for names whose connection is killed mid-tunnel by external filtering.\n",
 	}
 	key, err := newAPIKey()
 	if err != nil {

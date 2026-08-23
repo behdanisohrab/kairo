@@ -43,8 +43,10 @@ func (s *Server) serveDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 // processQuery is the whole point of this binary. Restricted domain plus an
 // allowlisted client: answer with our own IP and silence IPv6 so the traffic
-// is forced over the SNI router. Everyone else gets the upstream answer, so an
-// unallowlisted client still resolves normally and simply is not routed.
+// is forced over the SNI router — unless the name is marked direct, in which
+// case upstream records pass through untouched because its tunnel leg is
+// defeated by external filtering. Everyone else gets the upstream answer, so
+// an unallowlisted client still resolves normally and simply is not routed.
 func isAllowedForIP(s *Server, ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -75,7 +77,13 @@ func (s *Server) processQuery(req *dns.Msg, clientIP net.IP) *dns.Msg {
 		qtype = "TYPE" + strconv.Itoa(int(q.Qtype))
 	}
 
-	if s.st.IsRestricted(name) && isAllowedForIP(s, clientIP) {
+	restricted := s.st.IsRestricted(name)
+	// Direct-mode names stay restricted but are answered with real upstream
+	// records: their tunnel leg is defeated by external filtering, and the
+	// origin is reachable directly.
+	direct := restricted && s.st.IsDirect(name)
+
+	if restricted && !direct && isAllowedForIP(s, clientIP) {
 		switch q.Qtype {
 		case dns.TypeA:
 			s.recordDNS(qtype, "split")
@@ -110,7 +118,11 @@ func (s *Server) processQuery(req *dns.Msg, clientIP net.IP) *dns.Msg {
 		m.SetRcode(req, dns.RcodeServerFailure)
 		return m
 	}
-	s.recordDNS(qtype, "proxy")
+	outcome := "proxy"
+	if direct {
+		outcome = "direct"
+	}
+	s.recordDNS(qtype, outcome)
 	return resp
 }
 

@@ -137,6 +137,63 @@ func TestListFilesIgnoreComments(t *testing.T) {
 	}
 }
 
+func TestDirectDomains(t *testing.T) {
+	s := newTestState(t)
+
+	added, err := s.AddDirect("YouTube.COM")
+	if err != nil || !added {
+		t.Fatalf("AddDirect: added=%v err=%v", added, err)
+	}
+	addedAgain, err := s.AddDirect("youtube.com")
+	if err != nil {
+		t.Fatalf("duplicate AddDirect: %v", err)
+	}
+	if addedAgain {
+		t.Error("duplicate AddDirect must return added=false")
+	}
+
+	match := []string{"youtube.com", "www.youtube.com", "a.b.youtube.com"}
+	noMatch := []string{"google.com", "notyoutube.com", ""}
+	for _, d := range match {
+		if !s.IsDirect(d) {
+			t.Errorf("IsDirect(%q) = false, want true (parent walk)", d)
+		}
+	}
+	for _, d := range noMatch {
+		if s.IsDirect(d) {
+			t.Errorf("IsDirect(%q) = true, want false", d)
+		}
+	}
+	if got := s.DirectList(); len(got) != 1 || got[0] != "youtube.com" {
+		t.Errorf("DirectList = %v, want [youtube.com] (normalized)", got)
+	}
+
+	// Persisted to direct.txt and reloaded on next start.
+	dir := t.TempDir()
+	s2, err := NewState(&config.Config{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+	if _, err := s2.AddDirect("example.org"); err != nil {
+		t.Fatalf("AddDirect: %v", err)
+	}
+	s3, err := NewState(&config.Config{DataDir: dir})
+	if err != nil {
+		t.Fatalf("reload NewState: %v", err)
+	}
+	if !s3.IsDirect("www.example.org") {
+		t.Errorf("direct list did not survive reload: %v", s3.DirectList())
+	}
+
+	removed, err := s.RemoveDirect("youtube.com")
+	if err != nil || !removed {
+		t.Fatalf("RemoveDirect: removed=%v err=%v", removed, err)
+	}
+	if s.IsDirect("www.youtube.com") {
+		t.Error("IsDirect still true after removal")
+	}
+}
+
 func TestGenerateIPs(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewState(&config.Config{DataDir: dir})

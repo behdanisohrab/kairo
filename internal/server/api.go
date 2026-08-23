@@ -95,6 +95,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.requireAdmin(s.handleDeleteUser)(w, r)
 	case path == "restricted":
 		s.requireAdmin(s.handleRestricted)(w, r)
+	case path == "direct":
+		s.requireAdmin(s.handleDirect)(w, r)
 	case path == "generate":
 		s.requireAdmin(s.handleGenerate)(w, r)
 	case path == "status":
@@ -490,6 +492,49 @@ func (s *Server) handleRestricted(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleDirect manages the direct-mode list: restricted domains whose DNS
+// answers pass upstream records through instead of routing via the VPS.
+func (s *Server) handleDirect(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, apiData(s.st.DirectList()))
+		return
+	}
+
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		writeJSON(w, http.StatusBadRequest, apiError("missing 'domain' query parameter"))
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		added, err := s.st.AddDirect(domain)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, apiError(err.Error()))
+			return
+		}
+		if !added {
+			writeJSON(w, http.StatusConflict, apiError("domain already in direct mode"))
+			return
+		}
+		writeJSON(w, http.StatusOK, apiMessage("domain switched to direct mode"))
+	case http.MethodDelete:
+		removed, err := s.st.RemoveDirect(domain)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, apiError(err.Error()))
+			return
+		}
+		if !removed {
+			writeJSON(w, http.StatusNotFound, apiError("domain is not in direct mode"))
+			return
+		}
+		writeJSON(w, http.StatusOK, apiMessage("domain returned to tunnelled mode"))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
+	}
+}
+
 func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
@@ -519,6 +564,7 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		"vps_ip":             s.cfg.VPSIP,
 		"uptime_seconds":     int64(time.Since(s.start).Seconds()),
 		"allowlisted":        s.st.AllowedList(),
+		"direct":             s.st.DirectList(),
 		"restricted":         s.st.RestrictedList(),
 		"upstream_dns":       s.cfg.Upstream,
 		"ip_source":          s.st.IPSourcePath(),

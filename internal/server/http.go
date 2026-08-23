@@ -1,9 +1,9 @@
 package server
 
 import (
+	"embed"
 	"encoding/base64"
 	"encoding/json"
-	"embed"
 	"html/template"
 	"io"
 	"log/slog"
@@ -272,25 +272,28 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		allowlisted := 0
 		restricted := 0
+		direct := 0
 		if s.st != nil {
 			allowlisted = s.st.AllowedCount()
 			restricted = s.st.RestrictedCount()
+			direct = s.st.DirectCount()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":       dbOk,
-			"status":   map[string]string{"overall": map[bool]string{true: "ok", false: "degraded"}[dbOk]},
-			"version":  s.Version,
-			"uptime":   time.Since(s.start).String(),
+			"ok":             dbOk,
+			"status":         map[string]string{"overall": map[bool]string{true: "ok", false: "degraded"}[dbOk]},
+			"version":        s.Version,
+			"uptime":         time.Since(s.start).String(),
 			"uptime_seconds": int64(time.Since(s.start).Seconds()),
-			"host":     host,
-			"vps_ip":   vpsIP,
-			"admin_url": adminURL,
-			"doh_url":  dohURL,
+			"host":           host,
+			"vps_ip":         vpsIP,
+			"admin_url":      adminURL,
+			"doh_url":        dohURL,
 			"checks": map[string]interface{}{
-				"database": map[string]interface{}{"ok": dbOk, "error": dbErr},
+				"database":    map[string]interface{}{"ok": dbOk, "error": dbErr},
 				"allowlisted": allowlisted,
-				"restricted": restricted,
+				"restricted":  restricted,
+				"direct":      direct,
 			},
 		})
 		return

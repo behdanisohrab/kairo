@@ -24,6 +24,11 @@ import (
 const (
 	// DomainsFilename is the file holding the restricted domains.
 	DomainsFilename = "domains.txt"
+	// DirectFilename lists restricted domains answered with real upstream
+	// IPs instead of the VPS IP — for names whose tunnel leg is defeated by
+	// external filtering (SNI kills) but which load fine when connected to
+	// directly.
+	DirectFilename = "direct.txt"
 )
 
 // State owns the routing policy lists. Use NewState to construct one.
@@ -31,8 +36,11 @@ type State struct {
 	mu               sync.RWMutex
 	allowed          map[string]struct{}
 	domains          map[string]struct{}
+	direct           map[string]struct{}
 	domainsM         time.Time
+	directM          time.Time
 	domainsPath      string
+	directPath       string
 	ipSourcePath     string
 	ipSourceInterval time.Duration
 
@@ -68,7 +76,9 @@ func NewState(cfg *config.Config) (*State, error) {
 	s := &State{
 		allowed:          make(map[string]struct{}),
 		domains:          make(map[string]struct{}),
+		direct:           make(map[string]struct{}),
 		domainsPath:      filepath.Join(dataDir, DomainsFilename),
+		directPath:       filepath.Join(dataDir, DirectFilename),
 		ipSourcePath:     ipSource,
 		ipSourceInterval: time.Duration(cfg.IPSource.Interval) * time.Second,
 		Resolver:         resolve.DefaultResolver(cfg.Upstream),
@@ -83,28 +93,36 @@ func NewState(cfg *config.Config) (*State, error) {
 	return s, nil
 }
 
-// load reads the restricted-domains file; a missing file means an empty
-// policy. The client allowlist is not loaded here — it is seeded from the
-// database via SeedAllowed once the database is open.
+// load reads the policy files; missing files mean empty policies. The client
+// allowlist is not loaded here — it is seeded from the database via
+// SeedAllowed once the database is open.
 func (s *State) load() error {
-	domains, err := readStateFile(s.domainsPath)
+	domainLines, err := readStateFile(s.domainsPath)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("load %s: %w", s.domainsPath, err)
+	}
+	directLines, err := readStateFile(s.directPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("load %s: %w", s.directPath, err)
 	}
 
 	s.mu.Lock()
 	s.allowed = make(map[string]struct{})
-	s.domains = normalizeDomainSet(domains)
+	s.domains = normalizeDomainSet(domainLines)
+	s.direct = normalizeDomainSet(directLines)
 	if info, err := os.Stat(s.domainsPath); err == nil {
 		s.domainsM = info.ModTime()
 	}
+	if info, err := os.Stat(s.directPath); err == nil {
+		s.directM = info.ModTime()
+	}
 	s.mu.Unlock()
 
-	slog.Info("state loaded", "restricted", len(s.domains), "allowlisted", len(s.allowed))
+	slog.Info("state loaded", "restricted", len(s.domains), "direct", len(s.direct), "allowlisted", len(s.allowed))
 	return nil
 }
 
-// Watch reloads the restricted-domains file when it changes (polling, cheap).
+// Watch reloads the policy files when they change (polling, cheap).
 // The allowlist cache needs no watching: every mutation goes through this
 // process, which keeps cache and database in step.
 func (s *State) Watch(ctx context.Context) {
@@ -115,9 +133,30 @@ func (s *State) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.reloadDomains()
+			s.reloadListed(s.domainsPath, &s.domainsM, "domains", normalizeDomainSet, func(set map[string]struct{}) { s.domains = set })
+			s.reloadListed(s.directPath, &s.directM, "direct", normalizeDomainSet, func(set map[string]struct{}) { s.direct = set })
 		}
 	}
+}
+
+// reloadListed swaps a list file's contents in when its mtime moved.
+func (s *State) reloadListed(path string, mtime *time.Time, name string, norm func([]string) map[string]struct{}, swap func(map[string]struct{})) {
+	info, err := os.Stat(path)
+	if err != nil || info.ModTime().Equal(*mtime) {
+		return
+	}
+	lines, err := readStateFile(path)
+	if err != nil {
+		slog.Error("reload failed", "list", name, "error", err)
+		return
+	}
+	set := norm(lines)
+	s.mu.Lock()
+	swap(set)
+	*mtime = info.ModTime()
+	count := len(lines)
+	s.mu.Unlock()
+	slog.Info("reloaded list", "list", name, "entries", count)
 }
 
 // SeedAllowed replaces the in-memory allowlist cache with the durable set
@@ -134,27 +173,6 @@ func (s *State) SeedAllowed(ips []string) {
 	s.allowed = set
 	s.mu.Unlock()
 	slog.Info("allowlist cache seeded", "entries", len(set))
-}
-
-func (s *State) reloadDomains() {
-	info, err := os.Stat(s.domainsPath)
-	if err != nil {
-		return
-	}
-	if info.ModTime().Equal(s.domainsM) {
-		return
-	}
-	lines, err := readStateFile(s.domainsPath)
-	if err != nil {
-		slog.Error("reload failed", "list", "domains", "error", err)
-		return
-	}
-	s.mu.Lock()
-	s.domains = normalizeDomainSet(lines)
-	s.domainsM = info.ModTime()
-	count := len(lines)
-	s.mu.Unlock()
-	slog.Info("reloaded list", "list", "domains", "entries", count)
 }
 
 // IsAllowedIP reports whether the IP may be split-routed.
@@ -217,6 +235,21 @@ func (s *State) AllowedCount() int {
 	return len(s.allowed)
 }
 
+// matchesWithParents reports whether name or any parent suffix of it is in
+// the set, so youtube.com also catches www.youtube.com.
+func matchesWithParents(set map[string]struct{}, name string) bool {
+	for {
+		if _, ok := set[name]; ok {
+			return true
+		}
+		idx := strings.IndexByte(name, '.')
+		if idx < 0 {
+			return false
+		}
+		name = name[idx+1:]
+	}
+}
+
 // IsRestricted matches a name and its parents, so restricting youtube.com
 // also catches www.youtube.com and friends.
 func (s *State) IsRestricted(name string) bool {
@@ -226,16 +259,20 @@ func (s *State) IsRestricted(name string) bool {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for {
-		if _, ok := s.domains[name]; ok {
-			return true
-		}
-		idx := strings.IndexByte(name, '.')
-		if idx < 0 {
-			return false
-		}
-		name = name[idx+1:]
+	return matchesWithParents(s.domains, name)
+}
+
+// IsDirect reports whether the restricted name is served in direct mode
+// (real upstream IPs instead of the tunnel). Parent matching applies, so
+// marking youtube.com direct covers all its subdomains too.
+func (s *State) IsDirect(name string) bool {
+	name = config.NormalizeDomain(name)
+	if name == "" {
+		return false
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return matchesWithParents(s.direct, name)
 }
 
 func (s *State) AddRestricted(domain string) (added bool, err error) {
@@ -275,8 +312,51 @@ func (s *State) RestrictedCount() int {
 	return len(s.domains)
 }
 
+// AddDirect marks a restricted domain for direct answering.
+func (s *State) AddDirect(domain string) (added bool, err error) {
+	domain = config.NormalizeDomain(domain)
+	if domain == "" {
+		return false, fmt.Errorf("empty domain")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.direct[domain]; ok {
+		return false, nil
+	}
+	s.direct[domain] = struct{}{}
+	return true, s.saveDirect()
+}
+
+// RemoveDirect returns a name to tunnelled answering.
+func (s *State) RemoveDirect(domain string) (removed bool, err error) {
+	domain = config.NormalizeDomain(domain)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.direct[domain]; !ok {
+		return false, nil
+	}
+	delete(s.direct, domain)
+	return true, s.saveDirect()
+}
+
+func (s *State) DirectList() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sortedKeys(s.direct)
+}
+
+func (s *State) DirectCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.direct)
+}
+
 func (s *State) saveDomains() error {
 	return writeStateFile(s.domainsPath, sortedKeys(s.domains))
+}
+
+func (s *State) saveDirect() error {
+	return writeStateFile(s.directPath, sortedKeys(s.direct))
 }
 
 // IPSourcePath returns the path to the ip_source domains file.

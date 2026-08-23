@@ -90,6 +90,28 @@ func TestProcessQuerySplitRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("direct-mode restricted name is answered from upstream, not with the VPS IP", func(t *testing.T) {
+		// Point upstream at a dead resolver: the proxied answer must be a
+		// servfail with zero answers — anything carrying the VPS IP means the
+		// split branch fired for a direct-mode name.
+		srv.cfg.Upstream = []string{"127.0.0.1:9"}
+		if _, err := st.AddDirect("youtube.com"); err != nil {
+			t.Fatalf("AddDirect: %v", err)
+		}
+		resp := srv.processQuery(newQuery("www.youtube.com.", dns.TypeA), allowed)
+		for _, rr := range resp.Answer {
+			if a, ok := rr.(*dns.A); ok && a.A.String() == srv.cfg.VPSIP {
+				t.Fatalf("direct-mode name must not receive the VPS IP, got %s", a.A)
+			}
+		}
+		if resp.Rcode != dns.RcodeServerFailure {
+			t.Errorf("rcode = %v, want servfail (upstream unreachable proves the proxy path)", resp.Rcode)
+		}
+		if removed, _ := st.RemoveDirect("youtube.com"); !removed {
+			t.Fatal("RemoveDirect failed during cleanup")
+		}
+	})
+
 	t.Run("loopback is always allowed", func(t *testing.T) {
 		srv.cfg.Upstream = []string{"127.0.0.1:9"}
 		resp := srv.processQuery(newQuery("youtube.com.", dns.TypeA), net.ParseIP("127.0.0.1"))
