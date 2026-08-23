@@ -42,24 +42,6 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
-type Device struct {
-	ID         int       `json:"id"`
-	IP         string    `json:"ip"`
-	JA3Hash    string    `json:"ja3_hash"`
-	UserAgent  string    `json:"user_agent"`
-	DeviceType string    `json:"device_type"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
-}
-
-type ConnectionLog struct {
-	ID        int        `json:"id"`
-	DeviceID  int        `json:"device_id"`
-	UserID    *int       `json:"user_id"`
-	Domain    string     `json:"domain"`
-	CreatedAt time.Time  `json:"created_at"`
-}
-
 type DomainRequest struct {
 	ID        int       `json:"id"`
 	UserID    int       `json:"user_id"`
@@ -67,11 +49,6 @@ type DomainRequest struct {
 	Domain    string    `json:"domain"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-type UserWithDevices struct {
-	User
-	Devices []Device
 }
 
 func Open(path string) (*DB, error) {
@@ -115,26 +92,6 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			expires_at DATETIME NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS devices (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			ip         TEXT NOT NULL,
-			ja3_hash   TEXT NOT NULL,
-			user_agent TEXT,
-			first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-			last_seen  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(ip, ja3_hash)
-		)`,
-		`CREATE TABLE IF NOT EXISTS connection_logs (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			device_id  INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-			user_id    INTEGER,
-			domain     TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(device_id, domain)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_devices_ip ON devices(ip)`,
-		`CREATE INDEX IF NOT EXISTS idx_connection_logs_user ON connection_logs(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_connection_logs_device ON connection_logs(device_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS domain_requests (
@@ -156,6 +113,16 @@ func (db *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_allowed_ips_user ON user_allowed_ips(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_allowed_ips_ip ON user_allowed_ips(ip)`,
+		`CREATE TABLE IF NOT EXISTS connection_logs (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			ip         TEXT NOT NULL,
+			user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			domain     TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_logs_created ON connection_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_logs_user ON connection_logs(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_logs_ip ON connection_logs(ip)`,
 	}
 
 	for _, q := range queries {
@@ -164,10 +131,37 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Add device_type column if missing (migration for existing DBs)
-	if _, err := db.conn.Exec(`ALTER TABLE devices ADD COLUMN device_type TEXT NOT NULL DEFAULT ''`); err != nil {
-		slog.Debug("device_type migration: column may already exist", "err", err)
+	// Legacy device tracking (0.3.x and earlier): drop the devices table and
+	// the device-keyed connection_logs so the new ip-keyed schema takes over.
+	var legacyDevices int
+	if err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'devices'`,
+	).Scan(&legacyDevices); err != nil {
+		return fmt.Errorf("check legacy devices table: %w", err)
 	}
+	if legacyDevices > 0 {
+		slog.Info("migrating away legacy device tracking")
+		if _, err := db.conn.Exec(`DROP TABLE IF EXISTS connection_logs`); err != nil {
+			return fmt.Errorf("drop legacy connection_logs: %w", err)
+		}
+		if _, err := db.conn.Exec(`DROP TABLE IF EXISTS devices`); err != nil {
+			return fmt.Errorf("drop legacy devices: %w", err)
+		}
+		if _, err := db.conn.Exec(`CREATE TABLE IF NOT EXISTS connection_logs (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			ip         TEXT NOT NULL,
+			user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			domain     TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+			return fmt.Errorf("create connection_logs: %w", err)
+		}
+		if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_connection_logs_created ON connection_logs(created_at)`); err != nil {
+			return fmt.Errorf("index connection_logs: %w", err)
+		}
+	}
+
+	// Add ip_limit column if missing (migration for existing DBs)
 	if _, err := db.conn.Exec(`ALTER TABLE users ADD COLUMN ip_limit INTEGER NOT NULL DEFAULT 3`); err != nil {
 		slog.Debug("ip_limit migration: column may already exist", "err", err)
 	}

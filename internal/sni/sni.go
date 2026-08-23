@@ -124,12 +124,14 @@ func handleConn(cfg *config.Config, st *state.State, m *metrics.Metrics, clientC
 	recordSNI(m, "tunneled")
 	tunnel(clientConn, reader, peeked, st.TunnelAddr(sniName))
 
-	// Record device and connection for tracking (best-effort, non-blocking)
+	// Log the tunnelled connection, attributing it to the account that
+	// allowlisted the source IP (best-effort, non-blocking).
 	if db != nil && peerIP != nil {
-		ja3Hash := ComputeJA3(hello)
-		if device, err := db.UpsertDevice(peerIP.String(), ja3Hash, ""); err == nil {
-			_ = db.UpsertConnectionLog(device.ID, nil, sniName)
+		var uid *int
+		if id, ok, _ := db.GetUserIDByAllowedIP(peerIP.String()); ok {
+			uid = &id
 		}
+		_ = db.LogConnection(peerIP.String(), uid, sniName)
 	}
 }
 

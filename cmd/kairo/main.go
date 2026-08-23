@@ -125,6 +125,7 @@ func (r *RunCmd) Run() error {
 			select {
 			case <-ticker.C:
 				_ = db.ExpireOldSessions()
+				_, _ = db.PruneConnectionLogs(30)
 			case <-ctx.Done():
 				return
 			}

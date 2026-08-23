@@ -55,8 +55,6 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.requireAdmin(s.handleListUsers)(w, r)
 	case path == "users" && r.Method == http.MethodPost:
 		s.requireAdmin(s.handleCreateUser)(w, r)
-	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/devices"):
-		s.requireAdmin(s.handleUserDevices)(w, r)
 	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/api-key/regenerate"):
 		s.requireAdmin(s.handleRegenerateAPIKey)(w, r)
 	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/rate-limit"):
@@ -65,10 +63,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.requireAdmin(s.handleUpdateUserIpLimit)(w, r)
 	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/ips"):
 		s.handleUserIPs(w, r)
-	case path == "devices" && r.Method == http.MethodGet:
-		s.requireAdmin(s.handleAllDevices)(w, r)
-	case path == "me/devices":
-		s.handleMyDevices(w, r)
+	case path == "devices" || path == "me/devices":
+		s.handleUserDevices(w, r) // 410: device tracking removed
+	case strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/devices"):
+		s.handleUserDevices(w, r) // 410: device tracking removed
 	case path == "me/api-key/regenerate":
 		s.handleMyRegenerateAPIKey(w, r)
 	case path == "me/traffic":
@@ -716,29 +714,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserDevices(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
-		return
-	}
-
-	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
-	path = strings.TrimSuffix(path, "/devices")
-	id, err := strconv.Atoi(path)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiError("invalid user id"))
-		return
-	}
-
-	devices, err := s.db.GetDevicesByUser(id)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"devices": devices,
-	})
+	writeJSON(w, http.StatusGone, apiError("device tracking was removed; use /api/traffic for connection analytics"))
 }
 
 func (s *Server) handleRegenerateAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -767,38 +743,6 @@ func (s *Server) handleRegenerateAPIKey(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (s *Server) handleAllDevices(w http.ResponseWriter, r *http.Request) {
-	devices, err := s.db.GetAllDevices()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"devices": devices,
-	})
-}
-
-func (s *Server) handleMyDevices(w http.ResponseWriter, r *http.Request) {
-	user := s.authenticateRequest(r)
-	if user == nil {
-		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
-		return
-	}
-
-	devices, err := s.db.GetDevicesByUser(user.ID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"devices": devices,
-	})
-}
-
 func (s *Server) handleMyRegenerateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
@@ -823,24 +767,41 @@ func (s *Server) handleMyRegenerateAPIKey(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// rangeHours parses the ?range= query parameter ("1h", "24h", "7d") into a
+// hour count, clamped to 1..720. Default is 24.
+func rangeHours(r *http.Request) int {
+	switch r.URL.Query().Get("range") {
+	case "1h":
+		return 1
+	case "7d":
+		return 168
+	case "30d":
+		return 720
+	default:
+		return 24
+	}
+}
+
 func (s *Server) handleMyTraffic(w http.ResponseWriter, r *http.Request) {
 	user := s.authenticateRequest(r)
 	if user == nil {
 		writeJSON(w, http.StatusUnauthorized, apiError("not authenticated"))
 		return
 	}
-	devices, _ := s.db.GetDevicesByUser(user.ID)
-	logs, _ := s.db.GetConnectionLogsByUser(user.ID)
-	// Count by device and recent
-	recent := logs
-	if len(recent) > 20 {
-		recent = recent[:20]
+	hours := rangeHours(r)
+	buckets, _ := s.db.TrafficBuckets(hours)
+	connections, uniqueDomains, _ := s.db.UserTrafficTotals(hours, user.ID)
+	recent, _ := s.db.GetConnectionLogsByUser(user.ID, 20)
+	if recent == nil {
+		recent = []database.ConnectionLog{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":             true,
 		"user_id":        user.ID,
-		"devices":        len(devices),
-		"total_requests": len(logs),
+		"range_hours":    hours,
+		"total_requests": connections,
+		"unique_domains": uniqueDomains,
+		"buckets":        buckets,
 		"recent":         recent,
 		"rate_limit":     user.RateLimit,
 		"unlimited":      user.RateLimit == 0,
@@ -848,34 +809,31 @@ func (s *Server) handleMyTraffic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	hours := rangeHours(r)
 	users, _ := s.db.ListUsers()
-	devices, _ := s.db.GetAllDevices()
-	var totalLogs int
-	_ = s.db.CountConnectionLogs(&totalLogs)
-	logs, _ := s.db.GetRecentConnectionLogs(20)
-	// per-user breakdown
-	type userTraffic struct {
-		Username string `json:"username"`
-		Devices  int    `json:"devices"`
-		Requests int    `json:"requests"`
-	}
-	var breakdown []userTraffic
-	for _, u := range users {
-		devs, _ := s.db.GetDevicesByUser(u.ID)
-		cls, _ := s.db.GetConnectionLogsByUser(u.ID)
-		breakdown = append(breakdown, userTraffic{Username: u.Username, Devices: len(devs), Requests: len(cls)})
+	buckets, _ := s.db.TrafficBuckets(hours)
+	topDomains, _ := s.db.TopDomains(hours, 10)
+	topUsers, _ := s.db.TopUsers(hours, 10)
+	connections, uniqueIPs, _ := s.db.TrafficTotals(hours)
+	recent, _ := s.db.RecentConnections(20)
+	if recent == nil {
+		recent = []database.ConnectionLog{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":             true,
+		"range_hours":    hours,
 		"total_users":    len(users),
-		"total_devices":  len(devices),
-		"total_requests": totalLogs,
+		"connections":    connections,
+		"unique_ips":     uniqueIPs,
 		"allowlisted":    s.st.AllowedCount(),
 		"restricted":     s.st.RestrictedCount(),
+		"direct":         s.st.DirectCount(),
 		"uptime_seconds": int64(time.Since(s.start).Seconds()),
 		"version":        s.Version,
-		"recent":         logs,
-		"per_user":       breakdown,
+		"buckets":        buckets,
+		"top_domains":    topDomains,
+		"top_users":      topUsers,
+		"recent":         recent,
 	})
 }
 
