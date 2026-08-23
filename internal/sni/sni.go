@@ -107,10 +107,18 @@ func handleConn(cfg *config.Config, st *state.State, m *metrics.Metrics, clientC
 
 	// Everything else is a split-routed destination, and the allowlist gate
 	// applies again here. Trusting only the DNS answer would be naive.
+	// The in-memory cache answers first; the database (per-user allowlist
+	// union) is consulted on a cache miss so panel-added IPs work instantly.
 	if !st.IsAllowedIP(peerIP) {
-		recordSNI(m, "rejected")
-		slog.Info("SNI connection rejected: not allowlisted", "peer", peerIP, "sni", sniName)
-		return
+		allowed := false
+		if db != nil && peerIP != nil {
+			allowed, _ = db.IsIPAllowlistedAny(peerIP.String())
+		}
+		if !allowed {
+			recordSNI(m, "rejected")
+			slog.Info("SNI connection rejected: not allowlisted", "peer", peerIP, "sni", sniName)
+			return
+		}
 	}
 
 	recordSNI(m, "tunneled")

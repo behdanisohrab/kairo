@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"kairo/internal/config"
+	"kairo/internal/database"
 	"kairo/internal/metrics"
 	"kairo/internal/state"
 )
@@ -30,8 +31,8 @@ func newTestServer(t *testing.T) (*Server, *state.State) {
 
 func TestProcessQuerySplitRouting(t *testing.T) {
 	srv, st := newTestServer(t)
-	if _, err := st.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
-		t.Fatalf("AddAllowed: %v", err)
+	if !st.AddAllowed(net.ParseIP("198.51.100.7")) {
+		t.Fatal("AddAllowed: IP reported as not new")
 	}
 	if _, err := st.AddRestricted("youtube.com"); err != nil {
 		t.Fatalf("AddRestricted: %v", err)
@@ -115,8 +116,8 @@ func TestProcessQuerySplitRouting(t *testing.T) {
 
 func TestMetricsEndToEnd(t *testing.T) {
 	srv, st := newTestServer(t)
-	if _, err := st.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
-		t.Fatalf("AddAllowed: %v", err)
+	if !st.AddAllowed(net.ParseIP("198.51.100.7")) {
+		t.Fatal("AddAllowed: IP reported as not new")
 	}
 	if _, err := st.AddRestricted("youtube.com"); err != nil {
 		t.Fatalf("AddRestricted: %v", err)
@@ -186,5 +187,90 @@ func TestMetricsEndpointWorksWithNilMetrics(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest && rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("dns-query status = %d, want 400 or 429 (nil metrics must not panic)", rr.Code)
+	}
+}
+
+// TestAllowAddsIPToCallerAccount pins the v0.3 contract: POST /api/allow with
+// a user's API key stores the IP on THAT user's account (panel-visible), and
+// DELETE removes it again. The legacy single admin key maps onto the real
+// admin account row.
+func TestAllowAddsIPToCallerAccount(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(dir + "/kairo.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	bob, err := db.CreateUser("bob", "secret-password", "user")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	if err := db.EnsureAdmin("admin", "secret-password"); err != nil {
+		t.Fatalf("ensure admin: %v", err)
+	}
+	adminRow, err := db.GetUserByUsername("admin")
+	if err != nil || adminRow == nil {
+		t.Fatalf("resolve admin row: %v", err)
+	}
+
+	st, err := state.NewState(&config.Config{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+	srv := New(&config.Config{VPSIP: "203.0.113.10", TTL: 60, APIKey: "legacy-key"}, st, "test",
+		metrics.New(func() int { return st.AllowedCount() }, func() int { return st.RestrictedCount() }), nil)
+	srv.SetDB(db)
+	handler := srv.BuildHandler()
+
+	do := func(method, key, ip string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/api/allow?ip="+ip, nil)
+		req.Header.Set("X-API-Key", key)
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+	rowsOf := func(id int) map[string]bool {
+		rows, _ := db.ListUserIPs(id)
+		out := map[string]bool{}
+		for _, r := range rows {
+			out[r.IP] = true
+		}
+		return out
+	}
+
+	// bob adds an IP with his own API key → lands in bob's account.
+	if rr := do(http.MethodPost, bob.APIKey, "203.0.113.7"); rr.Code != http.StatusOK {
+		t.Fatalf("bob POST status = %d body = %s, want 200", rr.Code, rr.Body.String())
+	}
+	if !rowsOf(bob.ID)["203.0.113.7"] {
+		t.Errorf("IP missing from bob's panel-visible rows: %v", rowsOf(bob.ID))
+	}
+	if st.AllowedCount() != 1 {
+		t.Errorf("cache size = %d, want 1", st.AllowedCount())
+	}
+
+	// Duplicate → conflict, no second row.
+	if rr := do(http.MethodPost, bob.APIKey, "203.0.113.7"); rr.Code != http.StatusConflict {
+		t.Errorf("duplicate POST status = %d, want 409", rr.Code)
+	}
+
+	// The legacy single admin key resolves to the real admin row.
+	if rr := do(http.MethodPost, "legacy-key", "198.51.100.9"); rr.Code != http.StatusOK {
+		t.Fatalf("legacy-key POST status = %d body = %s, want 200", rr.Code, rr.Body.String())
+	}
+	if !rowsOf(adminRow.ID)["198.51.100.9"] {
+		t.Errorf("IP missing from the real admin account rows: %v", rowsOf(adminRow.ID))
+	}
+
+	// bob removes his IP; the cache entry survives while admin still holds his.
+	if rr := do(http.MethodDelete, bob.APIKey, "203.0.113.7"); rr.Code != http.StatusOK {
+		t.Fatalf("bob DELETE status = %d, want 200", rr.Code)
+	}
+	if len(rowsOf(bob.ID)) != 0 {
+		t.Errorf("bob rows after delete = %v, want empty", rowsOf(bob.ID))
+	}
+	if st.AllowedCount() != 1 {
+		t.Errorf("cache size = %d, want 1 while admin still holds an IP", st.AllowedCount())
 	}
 }

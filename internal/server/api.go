@@ -134,6 +134,13 @@ func (s *Server) authenticateRequest(r *http.Request) *database.User {
 
 	// Check legacy single API key - treat as admin (requires cfg)
 	if s.cfg != nil && subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1 {
+		// Resolve the real admin account so IP mutations land on an actual
+		// user row and show up in the panel, instead of a synthetic ID 0.
+		if s.db != nil {
+			if admin, _ := s.db.GetUserByUsername("admin"); admin != nil && admin.Role == "admin" {
+				return admin
+			}
+		}
 		return &database.User{
 			ID:       0,
 			Username: "admin",
@@ -152,6 +159,10 @@ func (s *Server) authenticateRequest(r *http.Request) *database.User {
 	return nil
 }
 
+// handleAllow manages the caller's own allowlist. The IP authenticated by
+// session or API key determines which account receives the entry, so panel
+// and API stay in sync on the same rows. GET (admin) returns the global
+// union of all users' IPs.
 func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 	user := s.authenticateRequest(r)
 	if user == nil {
@@ -164,11 +175,25 @@ func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
 			return
 		}
-		writeJSON(w, http.StatusOK, apiData(s.st.AllowedList()))
+		ips, err := s.db.DistinctAllowedIPs()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
+			return
+		}
+		writeJSON(w, http.StatusOK, apiData(ips))
 		return
 	}
 
 	ipParam := r.URL.Query().Get("ip")
+	if ipParam == "" {
+		var req struct {
+			IP string `json:"ip"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
+		}
+		ipParam = req.IP
+	}
 	if ipParam == "" {
 		writeJSON(w, http.StatusBadRequest, apiError("missing 'ip' query parameter"))
 		return
@@ -183,73 +208,43 @@ func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-admin can only allowlist their own current IP
-	if user.Role != "admin" {
-		clientIP := s.clientIP(r)
-		if clientIP == nil || ip.String() != clientIP.String() {
-			writeJSON(w, http.StatusForbidden, apiError("you can only allowlist your own current IP; ask admin for other IPs"))
-			return
-		}
-		// For DELETE, non-admin is not allowed at all (global list)
-		if r.Method == http.MethodDelete {
-			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
-			return
-		}
-	}
-
 	switch r.Method {
 	case http.MethodPost:
-		// Per-user self-add: store per-user first, enforce limit, then ensure global
-		if user.Role != "admin" {
-			if exists, _ := s.db.IsIPAllowlistedForUser(user.ID, ip.String()); exists {
-				writeJSON(w, http.StatusConflict, apiError("IP already allowlisted for you"))
-				return
-			}
-			if user.IpLimit != 0 {
-				cnt, _ := s.db.CountUserIPs(user.ID)
-				if cnt >= user.IpLimit {
-					writeJSON(w, http.StatusForbidden, apiError("IP limit reached"))
-					return
-				}
-			}
-			if err := s.db.AddUserIP(user.ID, ip.String()); err != nil && !strings.Contains(err.Error(), "UNIQUE") {
-				writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
-				return
-			}
-			// ensure global allowlist also has it for DNS (union)
-			_, _ = s.st.AddAllowed(ip)
-			writeJSON(w, http.StatusOK, apiMessage("IP allowlisted"))
-			return
-		}
-		// admin: add globally
-		added, err := s.st.AddAllowed(ip)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
-			return
-		}
-		if !added {
+		// The IP is stored on the calling account; the global gate unions all
+		// accounts. Admins are exempt from their own ip_limit.
+		if exists, _ := s.db.IsIPAllowlistedForUser(user.ID, ip.String()); exists {
 			writeJSON(w, http.StatusConflict, apiError("IP already allowlisted"))
 			return
 		}
-		writeJSON(w, http.StatusOK, apiMessage("IP allowlisted"))
-	case http.MethodDelete:
-		// Double-check admin for DELETE (already handled above for non-admin)
-		if user.Role != "admin" {
-			writeJSON(w, http.StatusForbidden, apiError("admin access required"))
+		if user.Role != "admin" && user.IpLimit != 0 {
+			cnt, _ := s.db.CountUserIPs(user.ID)
+			if cnt >= user.IpLimit {
+				writeJSON(w, http.StatusForbidden, apiError("IP limit reached"))
+				return
+			}
+		}
+		if err := s.db.AddUserIP(user.ID, ip.String()); err != nil && !strings.Contains(err.Error(), "UNIQUE") {
+			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
 			return
 		}
-		removed, err := s.st.RemoveAllowed(ip)
+		// Hot cache update so DNS/SNI pick it up immediately.
+		s.st.AddAllowed(ip)
+		writeJSON(w, http.StatusOK, apiMessage("IP allowlisted"))
+	case http.MethodDelete:
+		removedDB, err := s.db.RemoveUserIP(user.ID, ip.String())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError(err.Error()))
 			return
 		}
-		if !removed {
-			writeJSON(w, http.StatusNotFound, apiError("IP is not allowlisted"))
+		if !removedDB {
+			writeJSON(w, http.StatusNotFound, apiError("IP is not allowlisted for you"))
 			return
 		}
-		// also remove from all per-user tables for completeness (admin delete for all)
-		_, _ = s.db.RemoveUserIPAny(ip.String())
-		writeJSON(w, http.StatusOK, apiMessage("IP removed from allowlist"))
+		// Drop from the hot cache only when no other account still holds it.
+		if ok, _ := s.db.IsIPAllowlistedAny(ip.String()); !ok {
+			s.st.RemoveAllowed(ip)
+		}
+		writeJSON(w, http.StatusOK, apiMessage("IP removed from your allowlist"))
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, apiError("method not allowed"))
 	}
@@ -278,7 +273,9 @@ func (s *Server) handleMyIPs(w http.ResponseWriter, r *http.Request) {
 		ipParam := r.URL.Query().Get("ip")
 		if ipParam == "" {
 			// try JSON body
-			var req struct{ IP string `json:"ip"` }
+			var req struct {
+				IP string `json:"ip"`
+			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			ipParam = req.IP
 		}
@@ -312,7 +309,7 @@ func (s *Server) handleMyIPs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// also add to global allowlist for DNS (union)
-		_, _ = s.st.AddAllowed(ip)
+		s.st.AddAllowed(ip)
 		writeJSON(w, http.StatusOK, apiMessage("IP added"))
 		return
 	case http.MethodDelete:
@@ -338,7 +335,7 @@ func (s *Server) handleMyIPs(w http.ResponseWriter, r *http.Request) {
 		// do not automatically remove from global if other user still has it
 		// check if any user still has this IP
 		if ok, _ := s.db.IsIPAllowlistedAny(ip.String()); !ok {
-			_, _ = s.st.RemoveAllowed(ip)
+			s.st.RemoveAllowed(ip)
 		}
 		writeJSON(w, http.StatusOK, apiMessage("IP removed"))
 		return
@@ -389,7 +386,9 @@ func (s *Server) handleUserIPs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		ipParam := r.URL.Query().Get("ip")
 		if ipParam == "" {
-			var req struct{ IP string `json:"ip"` }
+			var req struct {
+				IP string `json:"ip"`
+			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			ipParam = req.IP
 		}
@@ -417,7 +416,7 @@ func (s *Server) handleUserIPs(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		_, _ = s.st.AddAllowed(ip)
+		s.st.AddAllowed(ip)
 		writeJSON(w, http.StatusOK, apiMessage("IP added for user"))
 		return
 	case http.MethodDelete:
@@ -441,7 +440,7 @@ func (s *Server) handleUserIPs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok, _ := s.db.IsIPAllowlistedAny(ip.String()); !ok {
-			_, _ = s.st.RemoveAllowed(ip)
+			s.st.RemoveAllowed(ip)
 		}
 		writeJSON(w, http.StatusOK, apiMessage("IP removed for user"))
 		return
@@ -560,7 +559,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":   true,
+		"ok":    true,
 		"users": result,
 	})
 }
@@ -717,7 +716,7 @@ func (s *Server) handleRegenerateAPIKey(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":     true,
+		"ok":      true,
 		"api_key": newKey,
 	})
 }
@@ -792,13 +791,13 @@ func (s *Server) handleMyTraffic(w http.ResponseWriter, r *http.Request) {
 		recent = recent[:20]
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":              true,
-		"user_id":         user.ID,
-		"devices":         len(devices),
-		"total_requests":  len(logs),
-		"recent":          recent,
-		"rate_limit":      user.RateLimit,
-		"unlimited":       user.RateLimit == 0,
+		"ok":             true,
+		"user_id":        user.ID,
+		"devices":        len(devices),
+		"total_requests": len(logs),
+		"recent":         recent,
+		"rate_limit":     user.RateLimit,
+		"unlimited":      user.RateLimit == 0,
 	})
 }
 
@@ -821,16 +820,16 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		breakdown = append(breakdown, userTraffic{Username: u.Username, Devices: len(devs), Requests: len(cls)})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":               true,
-		"total_users":      len(users),
-		"total_devices":    len(devices),
-		"total_requests":   totalLogs,
-		"allowlisted":      s.st.AllowedCount(),
-		"restricted":       s.st.RestrictedCount(),
-		"uptime_seconds":   int64(time.Since(s.start).Seconds()),
-		"version":          s.Version,
-		"recent":           logs,
-		"per_user":         breakdown,
+		"ok":             true,
+		"total_users":    len(users),
+		"total_devices":  len(devices),
+		"total_requests": totalLogs,
+		"allowlisted":    s.st.AllowedCount(),
+		"restricted":     s.st.RestrictedCount(),
+		"uptime_seconds": int64(time.Since(s.start).Seconds()),
+		"version":        s.Version,
+		"recent":         logs,
+		"per_user":       breakdown,
 	})
 }
 

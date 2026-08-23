@@ -42,9 +42,7 @@ func TestIsRestricted(t *testing.T) {
 
 func TestIsAllowedIP(t *testing.T) {
 	s := newTestState(t)
-	if _, err := s.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
-		t.Fatalf("AddAllowed: %v", err)
-	}
+	s.AddAllowed(net.ParseIP("198.51.100.7"))
 	if !s.IsAllowedIP(net.ParseIP("127.0.0.1")) {
 		t.Error("loopback must always be allowed")
 	}
@@ -62,14 +60,11 @@ func TestIsAllowedIP(t *testing.T) {
 	}
 }
 
-func TestPersistence(t *testing.T) {
+func TestDomainsPersistence(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewState(&config.Config{DataDir: dir})
 	if err != nil {
 		t.Fatalf("NewState: %v", err)
-	}
-	if _, err := s.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
-		t.Fatalf("AddAllowed: %v", err)
 	}
 	if _, err := s.AddRestricted("youtube.com"); err != nil {
 		t.Fatalf("AddRestricted: %v", err)
@@ -87,11 +82,44 @@ func TestPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload NewState: %v", err)
 	}
-	if got := s2.AllowedList(); len(got) != 1 || got[0] != "198.51.100.7" {
-		t.Errorf("reloaded allowlist = %v, want [198.51.100.7]", got)
-	}
 	if got := s2.RestrictedList(); len(got) != 1 || got[0] != "youtube.com" {
 		t.Errorf("reloaded domains = %v, want [youtube.com]", got)
+	}
+}
+
+// The 0.2.x-era allowed.txt is retired: it must not be read back into the
+// cache, and mutations must not resurrect the file. Persistence now lives in
+// the database and reaches the cache through SeedAllowed.
+func TestAllowlistFileIsRetired(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "allowed.txt"), []byte("198.51.100.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewState(&config.Config{DataDir: dir})
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+	if s.AllowedCount() != 0 {
+		t.Errorf("legacy allowed.txt leaked into the cache: %v", s.AllowedList())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "allowed.txt")); err != nil {
+		t.Errorf("stat allowed.txt: %v", err)
+	}
+}
+
+func TestSeedAllowed(t *testing.T) {
+	s := newTestState(t)
+	s.SeedAllowed([]string{"198.51.100.7", "2001:db8::1", "not-an-ip"})
+	if got := s.AllowedList(); len(got) != 2 || got[0] != "198.51.100.7" || got[1] != "2001:db8::1" {
+		t.Errorf("SeedAllowed cache = %v, want [198.51.100.7 2001:db8::1]", got)
+	}
+	if !s.IsAllowedIP(net.ParseIP("2001:db8::1")) {
+		t.Error("seeded IPv6 address must be allowed")
+	}
+	// Re-seeding replaces rather than appends.
+	s.SeedAllowed(nil)
+	if s.AllowedCount() != 0 {
+		t.Errorf("cache = %v, want empty after re-seed", s.AllowedList())
 	}
 }
 
@@ -160,5 +188,41 @@ func TestGenerateIPsMissingFileIsNoOp(t *testing.T) {
 	}
 	if added != 0 || failed != 0 {
 		t.Errorf("added = %d, failed = %d, want 0 0", added, failed)
+	}
+}
+
+func TestGenerateIPsPersistsViaHook(t *testing.T) {
+	s := newTestState(t)
+	s.Resolver = func(string) []net.IP {
+		return []net.IP{net.ParseIP("198.51.100.20")}
+	}
+	if err := os.WriteFile(s.IPSourcePath(), []byte("router.home\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var persisted []string
+	s.PersistIP = func(ip net.IP) error {
+		persisted = append(persisted, ip.String())
+		return nil
+	}
+
+	added, _, err := s.GenerateIPs()
+	if err != nil {
+		t.Fatalf("GenerateIPs: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("added = %d, want 1", added)
+	}
+	if len(persisted) != 1 || persisted[0] != "198.51.100.20" {
+		t.Errorf("PersistIP calls = %v, want [198.51.100.20]", persisted)
+	}
+
+	// Idempotent: a second run neither adds nor persists again.
+	persisted = nil
+	added, _, err = s.GenerateIPs()
+	if err != nil {
+		t.Fatalf("second GenerateIPs: %v", err)
+	}
+	if added != 0 || len(persisted) != 0 {
+		t.Errorf("second run: added = %d, persisted = %v, want 0 and none", added, persisted)
 	}
 }

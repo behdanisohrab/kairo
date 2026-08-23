@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -57,6 +58,21 @@ func main() {
 	}
 }
 
+// seedAllowlistCache loads the durable allowlist (the union of all users'
+// allowed IPs) into the in-memory cache and installs PersistIP so IPs
+// generated from the ip-source file are stored under the admin account.
+func seedAllowlistCache(st *state.State, db *database.DB, adminUserID int) {
+	ips, err := db.DistinctAllowedIPs()
+	if err != nil {
+		slog.Error("seeding allowlist cache failed", "error", err)
+	}
+	st.SeedAllowed(ips)
+	st.PersistIP = func(ip net.IP) error {
+		_, err := db.AddUserIPIfAbsent(adminUserID, ip.String())
+		return err
+	}
+}
+
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
@@ -88,6 +104,19 @@ func (r *RunCmd) Run() error {
 	}
 	slog.Info("admin user ready")
 
+	admin, err := db.GetUserByUsername("admin")
+	if err != nil || admin == nil {
+		return fmt.Errorf("resolve admin user: %v", err)
+	}
+
+	// One-time 0.2.x data migration: import the old allowed.txt allowlist into
+	// the admin account and retire the file as allowed.txt.legacy.
+	if n, err := db.MigrateLegacyAllowedFile(cfg.DataDir, admin.ID); err != nil {
+		return fmt.Errorf("migrate legacy allowlist: %w", err)
+	} else if n > 0 {
+		slog.Info("legacy IPs imported into admin account", "count", n)
+	}
+
 	// Clean up expired sessions periodically
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
@@ -106,6 +135,7 @@ func (r *RunCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	seedAllowlistCache(st, db, admin.ID)
 
 	go st.Watch(ctx)
 	go st.RunGenerator(ctx)
@@ -178,10 +208,25 @@ func (g *GenIPsCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	dbPath := filepath.Join(cfg.DataDir, "kairo.db")
+	db, err := database.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+	if err := db.EnsureAdmin("admin", cfg.AdminPassword); err != nil {
+		return fmt.Errorf("ensure admin user: %w", err)
+	}
+	admin, err := db.GetUserByUsername("admin")
+	if err != nil || admin == nil {
+		return fmt.Errorf("resolve admin user: %v", err)
+	}
+
 	st, err := state.NewState(cfg)
 	if err != nil {
 		return err
 	}
+	seedAllowlistCache(st, db, admin.ID)
 	added, failed, err := st.GenerateIPs()
 	if err != nil {
 		return err

@@ -105,8 +105,8 @@ func spinTunnelTarget(t *testing.T) (addr string, recv chan []byte) {
 func TestProxyProtocolGate(t *testing.T) {
 	cfg := &config.Config{ProxyProtocol: true, Host: "dns.test", VPSIP: "203.0.113.10"}
 	st := newTestState(t)
-	if _, err := st.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
-		t.Fatalf("AddAllowed: %v", err)
+	if !st.AddAllowed(net.ParseIP("198.51.100.7")) {
+		t.Fatal("AddAllowed: IP reported as not new")
 	}
 
 	hello, err := clientHelloBytes("example.com")
@@ -166,8 +166,8 @@ func TestProxyProtocolGate(t *testing.T) {
 func TestRejectsProxyHeaderWhenDisabled(t *testing.T) {
 	cfg := &config.Config{ProxyProtocol: false, Host: "dns.test", VPSIP: "203.0.113.10"}
 	st := newTestState(t)
-	if _, err := st.AddAllowed(net.ParseIP("198.51.100.7")); err != nil {
-		t.Fatalf("AddAllowed: %v", err)
+	if !st.AddAllowed(net.ParseIP("198.51.100.7")) {
+		t.Fatal("AddAllowed: IP reported as not new")
 	}
 
 	hello, err := clientHelloBytes("example.com")

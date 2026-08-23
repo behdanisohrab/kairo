@@ -103,3 +103,38 @@ func (db *DB) GetUserIPByID(id int) (*UserAllowedIP, error) {
 	}
 	return &r, nil
 }
+
+// AddUserIPIfAbsent inserts the IP for the user unless that (user, ip) pair is
+// already stored. It reports whether a row was inserted.
+func (db *DB) AddUserIPIfAbsent(userID int, ip string) (bool, error) {
+	res, err := db.conn.Exec(
+		`INSERT INTO user_allowed_ips (user_id, ip) VALUES (?, ?)
+		 ON CONFLICT(user_id, ip) DO NOTHING`, userID, ip)
+	if err != nil {
+		return false, fmt.Errorf("add user ip if absent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("add user ip if absent: %w", err)
+	}
+	return n > 0, nil
+}
+
+// DistinctAllowedIPs returns every allowlisted IP across all users, sorted,
+// deduplicated. This union is what DNS and SNI routing gate on.
+func (db *DB) DistinctAllowedIPs() ([]string, error) {
+	rows, err := db.conn.Query(`SELECT DISTINCT ip FROM user_allowed_ips ORDER BY ip`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		out = append(out, ip)
+	}
+	return out, rows.Err()
+}
