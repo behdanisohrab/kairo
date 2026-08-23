@@ -11,7 +11,6 @@ import { FiMapPin, FiPlus, FiTrash2 } from 'react-icons/fi'
 export default function MyIPsCard({ onChange }: { onChange?: () => void }) {
   const [ips, setIps] = useState<UserIP[]>([])
   const [limit, setLimit] = useState<number>(3)
-  const [loaded, setLoaded] = useState(false)
   const [currentIp, setCurrentIp] = useState<string | null>(null)
   const [ipInput, setIpInput] = useState('')
   const [adding, setAdding] = useState(false)
@@ -24,7 +23,6 @@ export default function MyIPsCard({ onChange }: { onChange?: () => void }) {
     if (r.ok) {
       setIps(r.ips ?? [])
       setLimit(r.limit ?? 3)
-      setLoaded(true)
       onChange?.()
     } else error(r.error ?? 'failed')
   }
